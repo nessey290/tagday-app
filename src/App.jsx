@@ -394,16 +394,31 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
     if (mapPoints.length > 0) return;
     if (!stops.length) return;
     setMapLoading(true);
-    setMapProgress(10);
+    setMapProgress(5);
 
     const city = settings.city || 'Midlothian, VA';
+
+    // Geocode JRHS by name for accurate coordinates
+    let jrhsCoords = { ...JRHS };
+    try {
+      const q = encodeURIComponent('James River High School, Midlothian, VA');
+      const res = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=1`);
+      const data = await res.json();
+      if (data?.features?.[0]) {
+        const [lng, lat] = data.features[0].geometry.coordinates;
+        jrhsCoords = { lat, lng };
+      }
+    } catch {}
+
+    setMapProgress(20);
+
     const streets = [];
     let overpassByName = {};
 
     // Single batch Overpass GET query — all streets at once
     try {
       const conditions = stops
-        .map(s => `way["name"="${s.replace(/"/g, '')}"](around:8000,${JRHS.lat},${JRHS.lng});`)
+        .map(s => `way["name"="${s.replace(/"/g, '')}"](around:8000,${jrhsCoords.lat},${jrhsCoords.lng});`)
         .join('');
       const q = `[out:json][timeout:30];(${conditions});out geom;`;
       const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`);
@@ -415,22 +430,20 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         el.geometry.forEach(g => overpassByName[name].push({ lat: g.lat, lng: g.lon }));
       });
     } catch (e) {
-      console.warn('Overpass batch failed, using Photon fallback for all streets', e);
+      console.warn('Overpass batch failed, falling back to Photon', e);
     }
 
-    setMapProgress(60);
+    setMapProgress(70);
 
     // Build street list — use Overpass geometry if available, else Photon center point
     for (let i = 0; i < stops.length; i++) {
       let pts = null;
       const ovPts = overpassByName[stops[i]];
       if (ovPts?.length >= 2) {
-        // Deduplicate consecutive identical points
         pts = ovPts.filter((p, idx) =>
           idx === 0 || p.lat !== ovPts[idx-1].lat || p.lng !== ovPts[idx-1].lng
         );
       } else {
-        // Photon fallback
         try {
           const q = encodeURIComponent(`${stops[i]}, ${city}`);
           const res = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=1`);
@@ -443,10 +456,13 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         if (pts) await new Promise(r => setTimeout(r, 800));
       }
       if (pts) streets.push({ name: stops[i], points: pts });
-      setMapProgress(60 + Math.round(((i+1)/stops.length)*40));
+      setMapProgress(70 + Math.round(((i+1)/stops.length)*25));
     }
 
-    setMapPoints(orderStreets(streets, JRHS));
+    const ordered = orderStreets(streets, jrhsCoords);
+    // Store jrhsCoords on the result so the map renderer can use it
+    ordered._jrhs = jrhsCoords;
+    setMapPoints(ordered);
     setMapLoading(false);
   };
 
@@ -458,7 +474,7 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       if (!container) return;
       let map = leafletRef.current;
       if (!map) {
-        map = window.L.map('driver-route-map').setView([JRHS.lat, JRHS.lng], 14);
+        map = window.L.map('driver-route-map').setView([37.564, -77.573], 14);
         window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           attribution: '© OpenStreetMap', maxZoom: 19
         }).addTo(map);
@@ -469,16 +485,17 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       });
       if (mapPoints.length === 0) return;
 
+      const jrhs = mapPoints._jrhs || JRHS;
       const STREET_COLORS = ['#964B8C','#1E5C3A','#C9912A','#2A7A4E','#7B3F9E','#2E8B57','#B5470F','#1A6B8A'];
-      const bounds = [[JRHS.lat, JRHS.lng]];
+      const streetBounds = [];
 
-      // JRHS school marker
+      // JRHS school marker — not included in fitBounds
       const schoolIcon = window.L.divIcon({
         className: '',
         html: `<div style="width:34px;height:34px;border-radius:50%;background:#333;border:3px solid white;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,0.4)">🏫</div>`,
         iconSize: [34,34], iconAnchor: [17,17]
       });
-      window.L.marker([JRHS.lat, JRHS.lng], { icon: schoolIcon }).addTo(map)
+      window.L.marker([jrhs.lat, jrhs.lng], { icon: schoolIcon }).addTo(map)
         .bindPopup('<b>James River High School</b><br>Starting point for all drivers');
 
       mapPoints.forEach((street, i) => {
@@ -498,16 +515,19 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         window.L.marker([startPt.lat, startPt.lng], { icon }).addTo(map)
           .bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>Stop ${i+1}: ${street.name}</b></div>`);
 
-        // Dashed connector from previous end to this street's start
-        const prevEnd = i === 0 ? JRHS : mapPoints[i-1].points[mapPoints[i-1].points.length-1];
+        // Dashed connector from previous end (or JRHS) to this street's start
+        const prevEnd = i === 0 ? jrhs : mapPoints[i-1].points[mapPoints[i-1].points.length-1];
         window.L.polyline([[prevEnd.lat, prevEnd.lng],[startPt.lat, startPt.lng]], {
           color: '#888', weight: 2, opacity: 0.55, dashArray: '7,9'
         }).addTo(map);
 
-        pts.forEach(p => bounds.push(p));
+        pts.forEach(p => streetBounds.push(p));
       });
 
-      map.fitBounds(bounds, { padding: [36, 36] });
+      // Fit to streets only so they stay clearly visible at street level
+      if (streetBounds.length > 0) {
+        map.fitBounds(streetBounds, { padding: [40, 40] });
+      }
     });
   }, [showMap, mapLoading, mapPoints]);
 
