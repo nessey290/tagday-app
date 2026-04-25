@@ -396,23 +396,52 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
     setMapLoading(true);
     setMapProgress(0);
 
-    // Geocode city center to anchor Overpass queries
     const city = settings.city || 'Midlothian, VA';
-    let clat = JRHS.lat, clng = JRHS.lng;
-    try {
-      const cr = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(city)}&limit=1`);
-      const cd = await cr.json();
-      if (cd?.features?.[0]) { [clng, clat] = cd.features[0].geometry.coordinates; }
-    } catch {}
-
     const streets = [];
+
     for (let i = 0; i < stops.length; i++) {
+      let pts = null;
+
+      // Try Overpass first — uses JRHS coords as center, 8km radius
       try {
-        const pts = await fetchStreetGeom(stops[i], clat, clng);
-        if (pts?.length >= 2) streets.push({ name: stops[i], points: pts });
+        const q = `[out:json][timeout:20];way["name"="${stops[i]}"](around:8000,${JRHS.lat},${JRHS.lng});out geom;`;
+        const res = await fetch('https://overpass-api.de/api/interpreter', {
+          method: 'POST',
+          body: `data=${encodeURIComponent(q)}`
+        });
+        const data = await res.json();
+        if (data.elements?.length) {
+          const allPts = data.elements.flatMap(el =>
+            (el.geometry || []).map(g => ({ lat: g.lat, lng: g.lon }))
+          );
+          const deduped = allPts.filter((p, idx) =>
+            idx === 0 || p.lat !== allPts[idx-1].lat || p.lng !== allPts[idx-1].lng
+          );
+          if (deduped.length >= 2) pts = deduped;
+        }
       } catch {}
+
+      // Fallback to Photon center point if Overpass gave nothing
+      if (!pts) {
+        try {
+          const q = encodeURIComponent(`${stops[i]}, ${city}`);
+          const res = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=1`);
+          const data = await res.json();
+          if (data?.features?.[0]) {
+            const [lng, lat] = data.features[0].geometry.coordinates;
+            // Create a small fake polyline around the point so it renders
+            pts = [
+              { lat: lat + 0.0002, lng },
+              { lat, lng },
+              { lat: lat - 0.0002, lng },
+            ];
+          }
+        } catch {}
+      }
+
+      if (pts) streets.push({ name: stops[i], points: pts });
       setMapProgress(Math.round(((i+1)/stops.length)*100));
-      await new Promise(r => setTimeout(r, 1500));
+      await new Promise(r => setTimeout(r, 1200));
     }
 
     setMapPoints(orderStreets(streets, JRHS));
