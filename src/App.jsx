@@ -413,53 +413,44 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
     setMapProgress(20);
 
     const streets = [];
-    let overpassByName = {};
 
-    // Single batch Overpass GET query — all streets at once
-    try {
-      const conditions = stops
-        .map(s => `way["name"="${s.replace(/"/g, '')}"](around:8000,${jrhsCoords.lat},${jrhsCoords.lng});`)
-        .join('');
-      const q = `[out:json][timeout:30];(${conditions});out body geom;`;
-      const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`);
-      const data = await res.json();
-      (data.elements || []).forEach(el => {
-        const name = el.tags?.name;
-        if (!name || !el.geometry?.length) return;
-        if (!overpassByName[name]) overpassByName[name] = { segs: [] };
-        const pts = el.geometry.map(g => ({ lat: g.lat, lng: g.lon }));
-        if (pts.length >= 2) overpassByName[name].segs.push(pts);
-      });
-    } catch (e) {
-      console.warn('Overpass batch failed, falling back to Photon', e);
-    }
-
-    setMapProgress(70);
-
-    // Build street list — use Overpass segments if available, else Photon center point
     for (let i = 0; i < stops.length; i++) {
-      const ovData = overpassByName[stops[i]];
-      if (ovData?.segs?.length > 0) {
-        // Use first point of first seg and last point of last seg for ordering
-        const firstPt = ovData.segs[0][0];
-        const lastSeg = ovData.segs[ovData.segs.length - 1];
-        const lastPt  = lastSeg[lastSeg.length - 1];
-        streets.push({ name: stops[i], segments: ovData.segs, points: [firstPt, lastPt] });
-      } else {
-        // Photon fallback — single center point rendered as short line
+      let segs = null;
+
+      // Individual Overpass query per street — no name matching needed
+      try {
+        const streetName = stops[i].replace(/"/g, '');
+        const q = `[out:json][timeout:15];way["name"="${streetName}"](around:6000,${jrhsCoords.lat},${jrhsCoords.lng});out body geom;`;
+        const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        if (data.elements?.length > 0) {
+          segs = data.elements
+            .filter(el => el.geometry?.length >= 2)
+            .map(el => el.geometry.map(g => ({ lat: g.lat, lng: g.lon })));
+        }
+      } catch {}
+
+      // Photon fallback if Overpass returned nothing
+      if (!segs || segs.length === 0) {
         try {
-          const q = encodeURIComponent(`${stops[i]}, ${city}`);
-          const res = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=1`);
+          const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(`${stops[i]}, ${city}`)}&limit=1`);
           const data = await res.json();
           if (data?.features?.[0]) {
             const [lng, lat] = data.features[0].geometry.coordinates;
-            const pts = [{ lat: lat + 0.0003, lng }, { lat, lng }, { lat: lat - 0.0003, lng }];
-            streets.push({ name: stops[i], segments: [pts], points: [pts[0], pts[2]] });
+            segs = [[{ lat: lat + 0.0003, lng }, { lat, lng }, { lat: lat - 0.0003, lng }]];
           }
         } catch {}
-        await new Promise(r => setTimeout(r, 800));
       }
-      setMapProgress(70 + Math.round(((i+1)/stops.length)*25));
+
+      if (segs?.length > 0) {
+        const firstPt = segs[0][0];
+        const lastSeg = segs[segs.length - 1];
+        const lastPt  = lastSeg[lastSeg.length - 1];
+        streets.push({ name: stops[i], segments: segs, points: [firstPt, lastPt] });
+      }
+
+      setMapProgress(20 + Math.round(((i + 1) / stops.length) * 75));
+      await new Promise(r => setTimeout(r, 1200));
     }
 
     const ordered = orderStreets(streets, jrhsCoords);
