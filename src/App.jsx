@@ -420,7 +420,7 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       const conditions = stops
         .map(s => `way["name"="${s.replace(/"/g, '')}"](around:8000,${jrhsCoords.lat},${jrhsCoords.lng});`)
         .join('');
-      const q = `[out:json][timeout:30];(${conditions});out geom;`;
+      const q = `[out:json][timeout:30];(${conditions});out body geom;`;
       const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`);
       const data = await res.json();
       (data.elements || []).forEach(el => {
