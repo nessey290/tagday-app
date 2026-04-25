@@ -107,8 +107,9 @@ const Label = ({ children }) => (
 /* ══════════════════════════════════════════════════
    HOME SCREEN
 ══════════════════════════════════════════════════ */
-function HomeScreen({ onDriver, onAdmin, settings }) {
+function HomeScreen({ onDriver, onAdmin, onResume, savedSession, routes, settings }) {
   const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  const savedRoute = savedSession ? routes.find(r => r.id === savedSession.routeId) : null;
   return (
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: font }}>
       <div style={{ background: C.navy, padding: '48px 24px 36px', textAlign: 'center' }}>
@@ -119,6 +120,31 @@ function HomeScreen({ onDriver, onAdmin, settings }) {
       </div>
 
       <div style={{ padding: '28px 24px', maxWidth: 420, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+        {/* Saved session resume card */}
+        {savedSession && savedRoute && (
+          <div style={{ background: C.goldbg, border: `1.5px solid ${C.goldL}`, borderRadius: 14, padding: '18px 20px' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.gold, letterSpacing: 0.8, marginBottom: 8 }}>WELCOME BACK</div>
+            <div style={{ fontWeight: 700, fontSize: 17, color: C.text, marginBottom: 2 }}>{savedSession.name}</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>
+              {savedRoute.name} · {savedSession.shift} Shift
+              {savedSession.students ? ` · ${savedSession.students}` : ''}
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button onClick={onResume} style={{
+                flex: 2, padding: '12px', borderRadius: 9, border: 'none',
+                background: C.navy, color: C.white, fontFamily: fontHead,
+                fontSize: 17, fontWeight: 700, cursor: 'pointer', letterSpacing: 0.5,
+              }}>Continue Collecting →</button>
+              <button onClick={onDriver} style={{
+                flex: 1, padding: '12px', borderRadius: 9, border: `1.5px solid ${C.border}`,
+                background: C.white, color: C.muted, fontFamily: font,
+                fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              }}>Not me</button>
+            </div>
+          </div>
+        )}
+
         <button onClick={onDriver} style={{
           background: C.gold, color: C.white, border: 'none', borderRadius: 14,
           padding: '28px 24px', fontSize: 24, fontFamily: fontHead, fontWeight: 700,
@@ -243,6 +269,52 @@ function DriverSetup({ routes, settings, onStart, onBack }) {
   );
 }
 
+/* ── JRHS starting coordinates ── */
+const JRHS = { lat: 37.5185, lng: -77.6255 };
+
+function haverDist(a, b) {
+  const R = 6371000;
+  const φ1 = a.lat * Math.PI/180, φ2 = b.lat * Math.PI/180;
+  const Δφ = (b.lat - a.lat) * Math.PI/180;
+  const Δλ = (b.lng - a.lng) * Math.PI/180;
+  const x = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+}
+
+async function fetchStreetGeom(streetName, clat, clng) {
+  const q = `[out:json][timeout:15];way["name"="${streetName}"](around:4000,${clat},${clng});out geom;`;
+  const res = await fetch('https://overpass-api.de/api/interpreter', {
+    method: 'POST',
+    body: `data=${encodeURIComponent(q)}`
+  });
+  const data = await res.json();
+  if (!data.elements?.length) return null;
+  const allPts = data.elements.flatMap(el =>
+    (el.geometry || []).map(g => ({ lat: g.lat, lng: g.lon }))
+  );
+  return allPts.filter((p, i) => i === 0 || p.lat !== allPts[i-1].lat || p.lng !== allPts[i-1].lng);
+}
+
+function orderStreets(streets, start) {
+  const rem = streets.filter(s => s.points?.length >= 2).map(s => ({ ...s }));
+  const ordered = [];
+  let cur = start;
+  while (rem.length > 0) {
+    let best = 0, bestDist = Infinity, bestRev = false;
+    rem.forEach((s, i) => {
+      const d1 = haverDist(cur, s.points[0]);
+      const d2 = haverDist(cur, s.points[s.points.length-1]);
+      if (d1 < bestDist) { bestDist = d1; best = i; bestRev = false; }
+      if (d2 < bestDist) { bestDist = d2; best = i; bestRev = true; }
+    });
+    const s = rem.splice(best, 1)[0];
+    if (bestRev) s.points = [...s.points].reverse();
+    ordered.push(s);
+    cur = s.points[s.points.length-1];
+  }
+  return ordered;
+}
+
 /* ══════════════════════════════════════════════════
    DRIVER SCREEN
 ══════════════════════════════════════════════════ */
@@ -316,33 +388,38 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
   const selectSuggestion = (s) => { setAddress(s); setSuggestions([]); };
 
-  // Geocode streets and show map
+  // Fetch full street geometry and build ordered route from JRHS
   const openRouteMap = async () => {
     setShowMap(true);
     if (mapPoints.length > 0) return;
     if (!stops.length) return;
     setMapLoading(true);
     setMapProgress(0);
-    const city = settings.city || '';
-    const pts = [];
+
+    // Geocode city center to anchor Overpass queries
+    const city = settings.city || 'Midlothian, VA';
+    let clat = JRHS.lat, clng = JRHS.lng;
+    try {
+      const cr = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(city)}&limit=1`);
+      const cd = await cr.json();
+      if (cd?.features?.[0]) { [clng, clat] = cd.features[0].geometry.coordinates; }
+    } catch {}
+
+    const streets = [];
     for (let i = 0; i < stops.length; i++) {
-      const q = encodeURIComponent(`${stops[i]}${city ? ', ' + city : ''}`);
       try {
-        const res = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=1`);
-        const data = await res.json();
-        if (data?.features?.[0]) {
-          const [lng, lat] = data.features[0].geometry.coordinates;
-          pts.push({ lat, lng, name: stops[i] });
-        }
+        const pts = await fetchStreetGeom(stops[i], clat, clng);
+        if (pts?.length >= 2) streets.push({ name: stops[i], points: pts });
       } catch {}
-      setMapProgress(Math.round(((i + 1) / stops.length) * 100));
-      await new Promise(r => setTimeout(r, 1100));
+      setMapProgress(Math.round(((i+1)/stops.length)*100));
+      await new Promise(r => setTimeout(r, 1500));
     }
-    setMapPoints(pts);
+
+    setMapPoints(orderStreets(streets, JRHS));
     setMapLoading(false);
   };
 
-  // Init/update Leaflet map when modal opens and points are ready
+  // Render Leaflet map with full street polylines
   useEffect(() => {
     if (!showMap || mapLoading) return;
     injectLeaflet().then(() => {
@@ -350,33 +427,56 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       if (!container) return;
       let map = leafletRef.current;
       if (!map) {
-        map = window.L.map('driver-route-map').setView([37.5, -77.4], 13);
+        map = window.L.map('driver-route-map').setView([JRHS.lat, JRHS.lng], 14);
         window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           attribution: '© OpenStreetMap', maxZoom: 19
         }).addTo(map);
         leafletRef.current = map;
       }
-      map.eachLayer(l => { if (l instanceof window.L.Marker || l instanceof window.L.Polyline) map.removeLayer(l); });
+      map.eachLayer(l => {
+        if (l instanceof window.L.Marker || l instanceof window.L.Polyline) map.removeLayer(l);
+      });
       if (mapPoints.length === 0) return;
-      const bounds = [];
-      mapPoints.forEach((pt, i) => {
-        const isFirst = i === 0;
+
+      const STREET_COLORS = ['#964B8C','#1E5C3A','#C9912A','#2A7A4E','#7B3F9E','#2E8B57','#B5470F','#1A6B8A'];
+      const bounds = [[JRHS.lat, JRHS.lng]];
+
+      // JRHS school marker
+      const schoolIcon = window.L.divIcon({
+        className: '',
+        html: `<div style="width:34px;height:34px;border-radius:50%;background:#333;border:3px solid white;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,0.4)">🏫</div>`,
+        iconSize: [34,34], iconAnchor: [17,17]
+      });
+      window.L.marker([JRHS.lat, JRHS.lng], { icon: schoolIcon }).addTo(map)
+        .bindPopup('<b>James River High School</b><br>Starting point for all drivers');
+
+      mapPoints.forEach((street, i) => {
+        const color = STREET_COLORS[i % STREET_COLORS.length];
+        const pts = street.points.map(p => [p.lat, p.lng]);
+
+        // Full street polyline
+        window.L.polyline(pts, { color, weight: 7, opacity: 0.85 }).addTo(map);
+
+        // Numbered start pin
+        const startPt = street.points[0];
         const icon = window.L.divIcon({
           className: '',
-          html: `<div style="width:${isFirst?28:20}px;height:${isFirst?28:20}px;border-radius:50%;background:${isFirst?'#964B8C':'#1E5C3A'};border:3px solid white;display:flex;align-items:center;justify-content:center;color:white;font-size:${isFirst?12:10}px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.3)">${isFirst?'START':i+1}</div>`,
-          iconSize: [isFirst?28:20, isFirst?28:20],
-          iconAnchor: [isFirst?14:10, isFirst?14:10],
+          html: `<div style="width:28px;height:28px;border-radius:50%;background:${color};border:3px solid white;display:flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.35)">${i+1}</div>`,
+          iconSize: [28,28], iconAnchor: [14,14]
         });
-        const marker = window.L.marker([pt.lat, pt.lng], { icon }).addTo(map);
-        marker.bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>${isFirst?'🚀 Start: ':''}${pt.name}</b></div>`);
-        bounds.push([pt.lat, pt.lng]);
-      });
-      if (mapPoints.length > 1) {
-        window.L.polyline(mapPoints.map(p => [p.lat, p.lng]), {
-          color: '#1E5C3A', weight: 3, opacity: 0.6, dashArray: '6,6'
+        window.L.marker([startPt.lat, startPt.lng], { icon }).addTo(map)
+          .bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>Stop ${i+1}: ${street.name}</b></div>`);
+
+        // Dashed connector from previous end to this street's start
+        const prevEnd = i === 0 ? JRHS : mapPoints[i-1].points[mapPoints[i-1].points.length-1];
+        window.L.polyline([[prevEnd.lat, prevEnd.lng],[startPt.lat, startPt.lng]], {
+          color: '#888', weight: 2, opacity: 0.55, dashArray: '7,9'
         }).addTo(map);
-      }
-      map.fitBounds(bounds, { padding: [30, 30] });
+
+        pts.forEach(p => bounds.push(p));
+      });
+
+      map.fitBounds(bounds, { padding: [36, 36] });
     });
   }, [showMap, mapLoading, mapPoints]);
 
@@ -497,7 +597,7 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
           {!mapLoading && mapPoints.length > 0 && (
             <div style={{ background: C.white, padding: '10px 16px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
               <a
-                href={`https://maps.google.com/?q=${encodeURIComponent(mapPoints[0].name + (settings.city ? ', ' + settings.city : ''))}`}
+                href={`https://www.google.com/maps/dir/${JRHS.lat},${JRHS.lng}/${mapPoints[0].points[0].lat},${mapPoints[0].points[0].lng}`}
                 target="_blank" rel="noopener noreferrer"
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: 6,
@@ -507,7 +607,7 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
               >
                 📍 Get Directions to Start
               </a>
-              <div style={{ fontSize: 12, color: C.muted }}>Opens Google Maps</div>
+              <div style={{ fontSize: 12, color: C.muted }}>From James River HS → {mapPoints[0].name}</div>
             </div>
           )}
 
@@ -1438,11 +1538,13 @@ export default function App() {
       const s  = await sGet('td-settings');
       const rp = await sGet('td-reports');
       const pr = await sGet('td-progress');
+      const ds = await sGet('td-driver-session');
       if (r)  setRoutes(r);
       if (d)  setDons(d);
       if (s)  setSettings(s);
       if (rp) setReports(rp);
       if (pr) setProgress(pr);
+      if (ds) setSession(ds);
       setLoading(false);
     })();
   }, []);
@@ -1458,6 +1560,12 @@ export default function App() {
     await sSet('td-progress', pr);
   };
 
+  const startDriver = async (session) => {
+    setSession(session);
+    await sSet('td-driver-session', session);
+    setScreen('driver');
+  };
+
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg }}>
       <div style={{ fontFamily: fontHead, fontSize: 20, color: C.navy, letterSpacing: 2 }}>LOADING…</div>
@@ -1465,11 +1573,17 @@ export default function App() {
   );
 
   if (screen === 'home')
-    return <HomeScreen onDriver={() => setScreen('driver-setup')} onAdmin={() => setScreen('admin-login')} settings={settings} />;
+    return <HomeScreen
+      onDriver={() => setScreen('driver-setup')}
+      onAdmin={() => setScreen('admin-login')}
+      onResume={() => setScreen('driver')}
+      savedSession={driverSession}
+      routes={routes}
+      settings={settings} />;
 
   if (screen === 'driver-setup')
     return <DriverSetup routes={routes} settings={settings} onBack={() => setScreen('home')}
-      onStart={(session) => { setSession(session); setScreen('driver'); }} />;
+      onStart={startDriver} />;
 
   if (screen === 'driver')
     return <DriverScreen session={driverSession} routes={routes} settings={settings} progress={progress} onBack={() => setScreen('home')}
