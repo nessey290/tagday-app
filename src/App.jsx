@@ -391,14 +391,14 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
   // Fetch full street geometry and build ordered route from JRHS
   const openRouteMap = async () => {
     setShowMap(true);
-    if (mapPoints.length > 0) return;
+    setMapPoints([]); // Always re-fetch fresh
     if (!stops.length) return;
     setMapLoading(true);
     setMapProgress(5);
 
     const city = settings.city || 'Midlothian, VA';
 
-    // Geocode JRHS by name for accurate coordinates
+    // Geocode JRHS accurately
     let jrhsCoords = { ...JRHS };
     try {
       const q = encodeURIComponent('James River High School, Midlothian, VA');
@@ -412,49 +412,54 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     setMapProgress(20);
 
+    // Fetch ALL named roads near JRHS in one POST — then filter by stop name in JS
+    let byName = {};
+    try {
+      const q = `[out:json][timeout:30];way["highway"]["name"](around:6000,${jrhsCoords.lat},${jrhsCoords.lng});out body geom;`;
+      const res = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `data=${encodeURIComponent(q)}`
+      });
+      const data = await res.json();
+      (data.elements || []).forEach(el => {
+        const name = el.tags?.name;
+        if (!name || !el.geometry?.length) return;
+        if (!byName[name]) byName[name] = [];
+        const pts = el.geometry.map(g => ({ lat: g.lat, lng: g.lon }));
+        if (pts.length >= 2) byName[name].push(pts);
+      });
+    } catch (e) {
+      console.warn('Overpass failed:', e);
+    }
+
+    setMapProgress(70);
+
     const streets = [];
-
     for (let i = 0; i < stops.length; i++) {
-      let segs = null;
-
-      // Individual Overpass query per street — no name matching needed
-      try {
-        const streetName = stops[i].replace(/"/g, '');
-        const q = `[out:json][timeout:15];way["name"="${streetName}"](around:6000,${jrhsCoords.lat},${jrhsCoords.lng});out body geom;`;
-        const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`);
-        const data = await res.json();
-        if (data.elements?.length > 0) {
-          segs = data.elements
-            .filter(el => el.geometry?.length >= 2)
-            .map(el => el.geometry.map(g => ({ lat: g.lat, lng: g.lon })));
-        }
-      } catch {}
-
-      // Photon fallback if Overpass returned nothing
-      if (!segs || segs.length === 0) {
-        try {
-          const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(`${stops[i]}, ${city}`)}&limit=1`);
-          const data = await res.json();
-          if (data?.features?.[0]) {
-            const [lng, lat] = data.features[0].geometry.coordinates;
-            segs = [[{ lat: lat + 0.0003, lng }, { lat, lng }, { lat: lat - 0.0003, lng }]];
-          }
-        } catch {}
-      }
-
+      const segs = byName[stops[i]];
       if (segs?.length > 0) {
         const firstPt = segs[0][0];
         const lastSeg = segs[segs.length - 1];
         const lastPt  = lastSeg[lastSeg.length - 1];
         streets.push({ name: stops[i], segments: segs, points: [firstPt, lastPt] });
+      } else {
+        // Photon fallback for streets not found in Overpass
+        try {
+          const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(`${stops[i]}, ${city}`)}&limit=1`);
+          const data = await res.json();
+          if (data?.features?.[0]) {
+            const [lng, lat] = data.features[0].geometry.coordinates;
+            const pts = [{ lat: lat + 0.0003, lng }, { lat, lng }, { lat: lat - 0.0003, lng }];
+            streets.push({ name: stops[i], segments: [pts], points: [pts[0], pts[2]] });
+          }
+        } catch {}
+        await new Promise(r => setTimeout(r, 800));
       }
-
-      setMapProgress(20 + Math.round(((i + 1) / stops.length) * 75));
-      await new Promise(r => setTimeout(r, 1200));
+      setMapProgress(70 + Math.round(((i+1)/stops.length)*25));
     }
 
     const ordered = orderStreets(streets, jrhsCoords);
-    // Store jrhsCoords on the result so the map renderer can use it
     ordered._jrhs = jrhsCoords;
     setMapPoints(ordered);
     setMapLoading(false);
