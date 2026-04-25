@@ -394,54 +394,56 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
     if (mapPoints.length > 0) return;
     if (!stops.length) return;
     setMapLoading(true);
-    setMapProgress(0);
+    setMapProgress(10);
 
     const city = settings.city || 'Midlothian, VA';
     const streets = [];
+    let overpassByName = {};
 
+    // Single batch Overpass GET query — all streets at once
+    try {
+      const conditions = stops
+        .map(s => `way["name"="${s.replace(/"/g, '')}"](around:8000,${JRHS.lat},${JRHS.lng});`)
+        .join('');
+      const q = `[out:json][timeout:30];(${conditions});out geom;`;
+      const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      (data.elements || []).forEach(el => {
+        const name = el.tags?.name;
+        if (!name || !el.geometry?.length) return;
+        if (!overpassByName[name]) overpassByName[name] = [];
+        el.geometry.forEach(g => overpassByName[name].push({ lat: g.lat, lng: g.lon }));
+      });
+    } catch (e) {
+      console.warn('Overpass batch failed, using Photon fallback for all streets', e);
+    }
+
+    setMapProgress(60);
+
+    // Build street list — use Overpass geometry if available, else Photon center point
     for (let i = 0; i < stops.length; i++) {
       let pts = null;
-
-      // Try Overpass first — uses JRHS coords as center, 8km radius
-      try {
-        const q = `[out:json][timeout:20];way["name"="${stops[i]}"](around:8000,${JRHS.lat},${JRHS.lng});out geom;`;
-        const res = await fetch('https://overpass-api.de/api/interpreter', {
-          method: 'POST',
-          body: `data=${encodeURIComponent(q)}`
-        });
-        const data = await res.json();
-        if (data.elements?.length) {
-          const allPts = data.elements.flatMap(el =>
-            (el.geometry || []).map(g => ({ lat: g.lat, lng: g.lon }))
-          );
-          const deduped = allPts.filter((p, idx) =>
-            idx === 0 || p.lat !== allPts[idx-1].lat || p.lng !== allPts[idx-1].lng
-          );
-          if (deduped.length >= 2) pts = deduped;
-        }
-      } catch {}
-
-      // Fallback to Photon center point if Overpass gave nothing
-      if (!pts) {
+      const ovPts = overpassByName[stops[i]];
+      if (ovPts?.length >= 2) {
+        // Deduplicate consecutive identical points
+        pts = ovPts.filter((p, idx) =>
+          idx === 0 || p.lat !== ovPts[idx-1].lat || p.lng !== ovPts[idx-1].lng
+        );
+      } else {
+        // Photon fallback
         try {
           const q = encodeURIComponent(`${stops[i]}, ${city}`);
           const res = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=1`);
           const data = await res.json();
           if (data?.features?.[0]) {
             const [lng, lat] = data.features[0].geometry.coordinates;
-            // Create a small fake polyline around the point so it renders
-            pts = [
-              { lat: lat + 0.0002, lng },
-              { lat, lng },
-              { lat: lat - 0.0002, lng },
-            ];
+            pts = [{ lat: lat + 0.0003, lng }, { lat, lng }, { lat: lat - 0.0003, lng }];
           }
         } catch {}
+        if (pts) await new Promise(r => setTimeout(r, 800));
       }
-
       if (pts) streets.push({ name: stops[i], points: pts });
-      setMapProgress(Math.round(((i+1)/stops.length)*100));
-      await new Promise(r => setTimeout(r, 1200));
+      setMapProgress(60 + Math.round(((i+1)/stops.length)*40));
     }
 
     setMapPoints(orderStreets(streets, JRHS));
