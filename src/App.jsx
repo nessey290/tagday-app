@@ -81,7 +81,7 @@ const Card = ({ children, style = {} }) => (
 const Header = ({ title, subtitle, onBack }) => (
   <div style={{ background: C.navy, color: C.white, padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 12 }}>
     {onBack && (
-      <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.gold, cursor: 'pointer', fontSize: 22, lineHeight: 1, padding: '0 4px' }}>←</button>
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.white, cursor: 'pointer', fontSize: 22, lineHeight: 1, padding: '0 4px' }}>←</button>
     )}
     <div>
       <div style={{ fontFamily: fontHead, fontSize: 22, fontWeight: 700, letterSpacing: 1 }}>{title}</div>
@@ -256,6 +256,12 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
   const [flash,        setFlash]       = useState(false);
   const [showReport,   setShowReport]  = useState(false);
   const [showSchedule, setShowSchedule]= useState(false);
+  const [showMap,      setShowMap]     = useState(false);
+  const [mapPoints,    setMapPoints]   = useState([]);
+  const [mapLoading,   setMapLoading]  = useState(false);
+  const [mapProgress,  setMapProgress] = useState(0);
+  const mapInited = useRef(false);
+  const leafletRef = useRef(null);
   const [reportType,   setReportType]  = useState('address');
   const [reportAddr,   setReportAddr]  = useState('');
   const [reportNote,   setReportNote]  = useState('');
@@ -278,17 +284,24 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
     setFlash(true); setTimeout(() => setFlash(false), 1800);
   };
 
+  // Route-aware autocomplete: check stops first, fall back to Photon
   const handleAddressChange = (val) => {
     setAddress(val);
     setSuggestions([]);
     clearTimeout(addrTimer.current);
-    if (val.trim().length < 3) return;
+    if (val.trim().length < 2) return;
+    const q = val.trim().toLowerCase();
+    const localMatches = stops.filter(s => s.toLowerCase().includes(q));
+    if (localMatches.length > 0) {
+      setSuggestions(localMatches.slice(0, 5));
+      return;
+    }
     addrTimer.current = setTimeout(async () => {
       setAddrLoading(true);
       try {
         const city = settings.city || '';
-        const q = encodeURIComponent(`${val.trim()}${city ? ', ' + city : ''}`);
-        const res = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=5`);
+        const qEnc = encodeURIComponent(`${val.trim()}${city ? ', ' + city : ''}`);
+        const res = await fetch(`https://photon.komoot.io/api/?q=${qEnc}&limit=5`);
         const data = await res.json();
         const results = (data?.features || []).map(f => {
           const p = f.properties;
@@ -301,10 +314,71 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
     }, 400);
   };
 
-  const selectSuggestion = (s) => {
-    setAddress(s);
-    setSuggestions([]);
+  const selectSuggestion = (s) => { setAddress(s); setSuggestions([]); };
+
+  // Geocode streets and show map
+  const openRouteMap = async () => {
+    setShowMap(true);
+    if (mapPoints.length > 0) return;
+    if (!stops.length) return;
+    setMapLoading(true);
+    setMapProgress(0);
+    const city = settings.city || '';
+    const pts = [];
+    for (let i = 0; i < stops.length; i++) {
+      const q = encodeURIComponent(`${stops[i]}${city ? ', ' + city : ''}`);
+      try {
+        const res = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=1`);
+        const data = await res.json();
+        if (data?.features?.[0]) {
+          const [lng, lat] = data.features[0].geometry.coordinates;
+          pts.push({ lat, lng, name: stops[i] });
+        }
+      } catch {}
+      setMapProgress(Math.round(((i + 1) / stops.length) * 100));
+      await new Promise(r => setTimeout(r, 1100));
+    }
+    setMapPoints(pts);
+    setMapLoading(false);
   };
+
+  // Init/update Leaflet map when modal opens and points are ready
+  useEffect(() => {
+    if (!showMap || mapLoading) return;
+    injectLeaflet().then(() => {
+      const container = document.getElementById('driver-route-map');
+      if (!container) return;
+      let map = leafletRef.current;
+      if (!map) {
+        map = window.L.map('driver-route-map').setView([37.5, -77.4], 13);
+        window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap', maxZoom: 19
+        }).addTo(map);
+        leafletRef.current = map;
+      }
+      map.eachLayer(l => { if (l instanceof window.L.Marker || l instanceof window.L.Polyline) map.removeLayer(l); });
+      if (mapPoints.length === 0) return;
+      const bounds = [];
+      mapPoints.forEach((pt, i) => {
+        const isFirst = i === 0;
+        const icon = window.L.divIcon({
+          className: '',
+          html: `<div style="width:${isFirst?28:20}px;height:${isFirst?28:20}px;border-radius:50%;background:${isFirst?'#964B8C':'#1E5C3A'};border:3px solid white;display:flex;align-items:center;justify-content:center;color:white;font-size:${isFirst?12:10}px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.3)">${isFirst?'START':i+1}</div>`,
+          iconSize: [isFirst?28:20, isFirst?28:20],
+          iconAnchor: [isFirst?14:10, isFirst?14:10],
+        });
+        const marker = window.L.marker([pt.lat, pt.lng], { icon }).addTo(map);
+        marker.bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>${isFirst?'🚀 Start: ':''}${pt.name}</b></div>`);
+        bounds.push([pt.lat, pt.lng]);
+      });
+      if (mapPoints.length > 1) {
+        window.L.polyline(mapPoints.map(p => [p.lat, p.lng]), {
+          color: '#1E5C3A', weight: 3, opacity: 0.6, dashArray: '6,6'
+        }).addTo(map);
+      }
+      map.fitBounds(bounds, { padding: [30, 30] });
+    });
+  }, [showMap, mapLoading, mapPoints]);
 
   const handleReport = async () => {
     if (!reportNote.trim()) return;
@@ -400,17 +474,69 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         </div>
       )}
 
+      {/* Route Map Modal */}
+      {showMap && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', zIndex: 1000, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ background: C.navy, padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontFamily: fontHead, fontSize: 20, color: C.white, fontWeight: 700 }}>🗺 Route Map</div>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.7)', marginTop: 2 }}>{route?.name}</div>
+            </div>
+            <button onClick={() => setShowMap(false)} style={{ background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: 8, color: C.white, cursor: 'pointer', fontSize: 15, fontWeight: 700, fontFamily: font, padding: '8px 14px' }}>✕ Close</button>
+          </div>
+
+          {mapLoading && (
+            <div style={{ background: C.white, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ flex: 1, background: C.border, borderRadius: 4, height: 6, overflow: 'hidden' }}>
+                <div style={{ height: '100%', background: C.navy, borderRadius: 4, width: `${mapProgress}%`, transition: 'width 0.3s' }} />
+              </div>
+              <div style={{ fontSize: 13, color: C.muted, minWidth: 80 }}>Mapping… {mapProgress}%</div>
+            </div>
+          )}
+
+          {!mapLoading && mapPoints.length > 0 && (
+            <div style={{ background: C.white, padding: '10px 16px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <a
+                href={`https://maps.google.com/?q=${encodeURIComponent(mapPoints[0].name + (settings.city ? ', ' + settings.city : ''))}`}
+                target="_blank" rel="noopener noreferrer"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  background: C.navy, color: C.white, textDecoration: 'none',
+                  padding: '9px 16px', borderRadius: 8, fontSize: 14, fontWeight: 600, fontFamily: font,
+                }}
+              >
+                📍 Get Directions to Start
+              </a>
+              <div style={{ fontSize: 12, color: C.muted }}>Opens Google Maps</div>
+            </div>
+          )}
+
+          {!mapLoading && mapPoints.length === 0 && stops.length > 0 && (
+            <div style={{ background: C.white, padding: '16px', textAlign: 'center', fontSize: 14, color: C.muted }}>
+              Could not geocode streets. Make sure City/Town is set in Admin → Settings.
+            </div>
+          )}
+
+          <div id="driver-route-map" style={{ flex: 1 }} />
+        </div>
+      )}
+
       {/* Header */}
       <div style={{ background: C.navy, padding: '16px 20px 20px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-          <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.gold, cursor: 'pointer', fontSize: 22 }}>←</button>
+          <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.white, cursor: 'pointer', fontSize: 22 }}>←</button>
           <div style={{ flex: 1 }}>
             <div style={{ fontFamily: fontHead, fontSize: 20, color: C.white, fontWeight: 700 }}>{route?.name || 'My Route'}</div>
             <div style={{ fontSize: 13, color: C.goldL }}>{session.name}{session.students ? ` · ${session.students}` : ''} · {session.shift} Shift</div>
           </div>
           {settings.schedule && (
-            <button onClick={() => setShowSchedule(true)} style={{ background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: 8, color: C.goldL, cursor: 'pointer', fontSize: 13, fontWeight: 600, fontFamily: font, padding: '7px 12px' }}>
+            <button onClick={() => setShowSchedule(true)} style={{ background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: 8, color: C.white, cursor: 'pointer', fontSize: 13, fontWeight: 600, fontFamily: font, padding: '7px 12px' }}>
               📅 Schedule
+            </button>
+          )}
+          {stops.length > 0 && (
+            <button onClick={openRouteMap} style={{ background: 'rgba(255,255,255,0.12)', border: 'none', borderRadius: 8, color: C.white, cursor: 'pointer', fontSize: 13, fontWeight: 600, fontFamily: font, padding: '7px 12px' }}>
+              🗺 Map
             </button>
           )}
         </div>
@@ -422,8 +548,8 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
             { label: 'Check', val: fmt$(check), hi: false },
           ].map(s => (
             <div key={s.label} style={{ background: 'rgba(255,255,255,0.1)', borderRadius: 10, padding: '10px 12px' }}>
-              <div style={{ fontSize: 11, color: C.goldL, marginBottom: 3, letterSpacing: 0.5 }}>{s.label}</div>
-              <div style={{ fontFamily: fontHead, fontSize: s.hi ? 24 : 20, color: s.hi ? C.gold : C.white, fontWeight: 700 }}>{s.val}</div>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)', marginBottom: 3, letterSpacing: 0.5 }}>{s.label}</div>
+              <div style={{ fontFamily: fontHead, fontSize: s.hi ? 24 : 20, color: C.white, fontWeight: 700 }}>{s.val}</div>
             </div>
           ))}
         </div>
@@ -431,8 +557,8 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         {stops.length > 0 && (
           <div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-              <div style={{ fontSize: 12, color: C.goldL, fontWeight: 600 }}>ROUTE PROGRESS</div>
-              <div style={{ fontSize: 12, color: C.gold, fontWeight: 700 }}>{checked.length}/{stops.length} streets · {pctDone}%</div>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.7)', fontWeight: 600 }}>ROUTE PROGRESS</div>
+              <div style={{ fontSize: 12, color: C.white, fontWeight: 700 }}>{checked.length}/{stops.length} streets · {pctDone}%</div>
             </div>
             <div style={{ background: 'rgba(255,255,255,0.15)', borderRadius: 4, height: 8, overflow: 'hidden' }}>
               <div style={{ height: '100%', borderRadius: 4, background: C.gold, width: `${pctDone}%`, transition: 'width 0.4s ease' }} />
