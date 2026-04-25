@@ -426,8 +426,9 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       (data.elements || []).forEach(el => {
         const name = el.tags?.name;
         if (!name || !el.geometry?.length) return;
-        if (!overpassByName[name]) overpassByName[name] = [];
-        el.geometry.forEach(g => overpassByName[name].push({ lat: g.lat, lng: g.lon }));
+        if (!overpassByName[name]) overpassByName[name] = { segs: [] };
+        const pts = el.geometry.map(g => ({ lat: g.lat, lng: g.lon }));
+        if (pts.length >= 2) overpassByName[name].segs.push(pts);
       });
     } catch (e) {
       console.warn('Overpass batch failed, falling back to Photon', e);
@@ -435,27 +436,29 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     setMapProgress(70);
 
-    // Build street list — use Overpass geometry if available, else Photon center point
+    // Build street list — use Overpass segments if available, else Photon center point
     for (let i = 0; i < stops.length; i++) {
-      let pts = null;
-      const ovPts = overpassByName[stops[i]];
-      if (ovPts?.length >= 2) {
-        pts = ovPts.filter((p, idx) =>
-          idx === 0 || p.lat !== ovPts[idx-1].lat || p.lng !== ovPts[idx-1].lng
-        );
+      const ovData = overpassByName[stops[i]];
+      if (ovData?.segs?.length > 0) {
+        // Use first point of first seg and last point of last seg for ordering
+        const firstPt = ovData.segs[0][0];
+        const lastSeg = ovData.segs[ovData.segs.length - 1];
+        const lastPt  = lastSeg[lastSeg.length - 1];
+        streets.push({ name: stops[i], segments: ovData.segs, points: [firstPt, lastPt] });
       } else {
+        // Photon fallback — single center point rendered as short line
         try {
           const q = encodeURIComponent(`${stops[i]}, ${city}`);
           const res = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=1`);
           const data = await res.json();
           if (data?.features?.[0]) {
             const [lng, lat] = data.features[0].geometry.coordinates;
-            pts = [{ lat: lat + 0.0003, lng }, { lat, lng }, { lat: lat - 0.0003, lng }];
+            const pts = [{ lat: lat + 0.0003, lng }, { lat, lng }, { lat: lat - 0.0003, lng }];
+            streets.push({ name: stops[i], segments: [pts], points: [pts[0], pts[2]] });
           }
         } catch {}
-        if (pts) await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 800));
       }
-      if (pts) streets.push({ name: stops[i], points: pts });
       setMapProgress(70 + Math.round(((i+1)/stops.length)*25));
     }
 
@@ -500,12 +503,16 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
       mapPoints.forEach((street, i) => {
         const color = STREET_COLORS[i % STREET_COLORS.length];
-        const pts = street.points.map(p => [p.lat, p.lng]);
 
-        // Full street polyline
-        window.L.polyline(pts, { color, weight: 7, opacity: 0.85 }).addTo(map);
+        // Draw each OSM way segment as its own polyline (same color)
+        const segs = street.segments || [street.points];
+        segs.forEach(seg => {
+          const pts = seg.map(p => [p.lat, p.lng]);
+          window.L.polyline(pts, { color, weight: 7, opacity: 0.85 }).addTo(map);
+          pts.forEach(p => streetBounds.push(p));
+        });
 
-        // Numbered start pin
+        // Numbered start pin at the approach end
         const startPt = street.points[0];
         const icon = window.L.divIcon({
           className: '',
@@ -520,8 +527,6 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         window.L.polyline([[prevEnd.lat, prevEnd.lng],[startPt.lat, startPt.lng]], {
           color: '#888', weight: 2, opacity: 0.55, dashArray: '7,9'
         }).addTo(map);
-
-        pts.forEach(p => streetBounds.push(p));
       });
 
       // Fit to streets only so they stay clearly visible at street level
