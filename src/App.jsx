@@ -412,16 +412,12 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     setMapProgress(20);
 
-    // Fetch ALL named roads near JRHS in one POST via CORS proxy
+    // Fetch ALL named residential roads near JRHS via allorigins proxy (handles CORS)
     let byName = {};
     try {
-      const q = `[out:json][timeout:30];way["highway"]["name"](around:6000,${jrhsCoords.lat},${jrhsCoords.lng});out body geom;`;
-      const targetUrl = `https://overpass-api.de/api/interpreter`;
-      const res = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `data=${encodeURIComponent(q)}`
-      });
+      const q = `[out:json][timeout:25];way["highway"~"residential|living_street|tertiary"]["name"](around:4000,${jrhsCoords.lat},${jrhsCoords.lng});out body geom;`;
+      const overpassUrl = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`;
+      const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(overpassUrl)}`);
       const data = await res.json();
       (data.elements || []).forEach(el => {
         const name = el.tags?.name;
