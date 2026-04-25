@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 /* ── DESIGN TOKENS ── */
 const C = {
@@ -250,6 +250,9 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
   const [amount,       setAmount]      = useState('');
   const [type,         setType]        = useState('cash');
   const [address,      setAddress]     = useState('');
+  const [suggestions,  setSuggestions] = useState([]);
+  const [addrLoading,  setAddrLoading] = useState(false);
+  const addrTimer = useRef(null);
   const [flash,        setFlash]       = useState(false);
   const [showReport,   setShowReport]  = useState(false);
   const [showSchedule, setShowSchedule]= useState(false);
@@ -271,8 +274,36 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
   const handleAdd = async () => {
     if (!canAdd) return;
     await onAddDonation({ amount: Number(amount), type, address: address.trim(), driverName: session.name, students: session.students });
-    setAmount(''); setAddress('');
+    setAmount(''); setAddress(''); setSuggestions([]);
     setFlash(true); setTimeout(() => setFlash(false), 1800);
+  };
+
+  const handleAddressChange = (val) => {
+    setAddress(val);
+    setSuggestions([]);
+    clearTimeout(addrTimer.current);
+    if (val.trim().length < 3) return;
+    addrTimer.current = setTimeout(async () => {
+      setAddrLoading(true);
+      try {
+        const city = settings.city || '';
+        const q = encodeURIComponent(`${val.trim()}${city ? ', ' + city : ''}`);
+        const res = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=5`);
+        const data = await res.json();
+        const results = (data?.features || []).map(f => {
+          const p = f.properties;
+          const parts = [p.housenumber, p.street, p.city || p.town || p.village].filter(Boolean);
+          return parts.join(' ');
+        }).filter(Boolean);
+        setSuggestions([...new Set(results)]);
+      } catch {}
+      setAddrLoading(false);
+    }, 400);
+  };
+
+  const selectSuggestion = (s) => {
+    setAddress(s);
+    setSuggestions([]);
   };
 
   const handleReport = async () => {
@@ -501,9 +532,47 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
             </div>
           </div>
 
-          <div style={{ marginBottom: 18 }}>
+          <div style={{ marginBottom: 18, position: 'relative' }}>
             <Label>Address <span style={{ color: C.border, fontWeight: 400, textTransform: 'none', fontSize: 11 }}>(optional)</span></Label>
-            <TextInput value={address} onChange={setAddress} placeholder="e.g. 123 Oak Street" />
+            <div style={{ position: 'relative' }}>
+              <input
+                type="text"
+                value={address}
+                onChange={e => handleAddressChange(e.target.value)}
+                onBlur={() => setTimeout(() => setSuggestions([]), 200)}
+                placeholder="e.g. 123 Oak Street"
+                style={{
+                  width: '100%', padding: '10px 14px', borderRadius: 8,
+                  border: `1.5px solid ${C.border}`, fontSize: 15, fontFamily: font,
+                  color: C.text, background: C.white, boxSizing: 'border-box', outline: 'none',
+                }}
+              />
+              {addrLoading && (
+                <div style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 12, color: C.muted }}>
+                  searching…
+                </div>
+              )}
+            </div>
+            {suggestions.length > 0 && (
+              <div style={{
+                position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 100,
+                background: C.white, border: `1.5px solid ${C.border}`, borderRadius: 8,
+                boxShadow: '0 4px 16px rgba(0,0,0,0.12)', overflow: 'hidden', marginTop: 2,
+              }}>
+                {suggestions.map((s, i) => (
+                  <button key={i} onMouseDown={() => selectSuggestion(s)} style={{
+                    width: '100%', padding: '11px 14px', textAlign: 'left', border: 'none',
+                    borderBottom: i < suggestions.length - 1 ? `1px solid ${C.border}` : 'none',
+                    background: C.white, cursor: 'pointer', fontFamily: font, fontSize: 14, color: C.text,
+                  }}
+                  onMouseEnter={e => e.target.style.background = C.bg}
+                  onMouseLeave={e => e.target.style.background = C.white}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <button onClick={handleAdd} disabled={!canAdd} style={{
@@ -997,11 +1066,12 @@ function injectLeaflet() {
 async function geocode(address, city) {
   const q = encodeURIComponent(`${address}, ${city}`);
   try {
-    const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=1`, {
-      headers: { 'Accept-Language': 'en', 'User-Agent': 'TagDayApp/1.0' }
-    });
+    const res = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=1`);
     const data = await res.json();
-    if (data[0]) return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+    if (data?.features?.[0]) {
+      const [lng, lat] = data.features[0].geometry.coordinates;
+      return { lat, lng };
+    }
   } catch {}
   return null;
 }
