@@ -2,22 +2,22 @@ import { useState, useEffect, useRef } from "react";
 
 /* ── DESIGN TOKENS ── */
 const C = {
-  navy:    '#1a2744',
-  navyL:   '#253660',
-  gold:    '#c9a227',
-  goldL:   '#f0e6b0',
-  goldbg:  '#fffdf0',
+  navy:    '#1E5C3A',
+  navyL:   '#2A7A4E',
+  gold:    '#964B8C',
+  goldL:   '#D4A8D0',
+  goldbg:  '#F7EFF6',
   white:   '#ffffff',
-  bg:      '#f0f3fa',
+  bg:      '#F2F7F4',
   card:    '#ffffff',
-  text:    '#151d35',
-  muted:   '#5a6a8a',
-  border:  '#dde4f5',
+  text:    '#0D2B1C',
+  muted:   '#4A7A5E',
+  border:  '#C2DDD0',
   red:     '#dc3545',
   redbg:   '#fff5f5',
   green:   '#198754',
   greenbg: '#f0fff4',
-  tag:     '#e8efff',
+  tag:     '#EAF0EC',
 };
 const font     = "'DM Sans', system-ui, sans-serif";
 const fontHead = "'Barlow Condensed', system-ui, sans-serif";
@@ -36,11 +36,11 @@ const fmt$ = (n) => '$' + Number(n || 0).toFixed(2);
 const genId = () => Math.random().toString(36).substr(2, 9);
 
 async function sGet(key) {
-  try { const r = await window.storage.get(key); return r ? JSON.parse(r.value) : null; }
+  try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : null; }
   catch { return null; }
 }
 async function sSet(key, val) {
-  try { await window.storage.set(key, JSON.stringify(val)); }
+  try { localStorage.setItem(key, JSON.stringify(val)); }
   catch (e) { console.error(e); }
 }
 
@@ -48,7 +48,7 @@ async function sSet(key, val) {
 const Btn = ({ onClick, children, variant = 'primary', style = {}, disabled = false }) => {
   const vs = {
     primary: { background: C.navy,  color: C.white, border: 'none' },
-    gold:    { background: C.gold,  color: C.navy,  border: 'none' },
+    gold:    { background: C.gold,  color: C.white, border: 'none' },
     outline: { background: 'transparent', color: C.navy, border: `2px solid ${C.navy}` },
     danger:  { background: C.red,   color: C.white, border: 'none' },
     ghost:   { background: 'transparent', color: C.muted, border: `1px solid ${C.border}` },
@@ -112,18 +112,18 @@ function HomeScreen({ onDriver, onAdmin, settings }) {
   return (
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: font }}>
       <div style={{ background: C.navy, padding: '48px 24px 36px', textAlign: 'center' }}>
-        <div style={{ fontFamily: fontHead, fontSize: 44, fontWeight: 700, color: C.gold, letterSpacing: 3 }}>
-          🎺 {settings.eventName || 'TAG DAY'}
+        <div style={{ fontFamily: fontHead, fontSize: 36, fontWeight: 700, color: C.gold, letterSpacing: 3 }}>
+          🎺 {settings.eventName || 'JAMES RIVER REGIMENT'}
         </div>
         <div style={{ color: C.goldL, fontSize: 14, marginTop: 8 }}>{today}</div>
       </div>
 
       <div style={{ padding: '28px 24px', maxWidth: 420, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <button onClick={onDriver} style={{
-          background: C.gold, color: C.navy, border: 'none', borderRadius: 14,
+          background: C.gold, color: C.white, border: 'none', borderRadius: 14,
           padding: '28px 24px', fontSize: 24, fontFamily: fontHead, fontWeight: 700,
           letterSpacing: 1, cursor: 'pointer', textAlign: 'left',
-          boxShadow: '0 6px 20px rgba(201,162,39,0.35)',
+          boxShadow: '0 6px 20px rgba(150,75,140,0.35)',
         }}>
           🚗  I'M A DRIVER
           <div style={{ fontSize: 14, fontFamily: font, fontWeight: 500, marginTop: 5, opacity: 0.75 }}>Log donations for your route</div>
@@ -231,7 +231,7 @@ function DriverSetup({ routes, settings, onStart, onBack }) {
             style={{
               width: '100%', padding: '16px', borderRadius: 10, border: 'none',
               background: (!name.trim() || !routeId) ? C.border : C.gold,
-              color: (!name.trim() || !routeId) ? C.muted : C.navy,
+              color: (!name.trim() || !routeId) ? C.muted : C.white,
               fontSize: 20, fontFamily: fontHead, fontWeight: 700, letterSpacing: 1,
               cursor: (!name.trim() || !routeId) ? 'not-allowed' : 'pointer',
             }}>
@@ -445,9 +445,9 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
         {/* Broadcast Alert */}
         {settings.broadcast && settings.broadcast.trim() && (
-          <div style={{ background: '#7c2d12', border: '2px solid #f97316', borderRadius: 10, padding: '14px 16px', marginBottom: 14 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: '#fed7aa', letterSpacing: 0.8, marginBottom: 5 }}>📢 ALERT FROM ADMIN</div>
-            <div style={{ fontSize: 14, color: '#fff7ed', fontWeight: 600, lineHeight: 1.5 }}>{settings.broadcast}</div>
+          <div style={{ background: '#0D3321', border: '2px solid #964B8C', borderRadius: 10, padding: '14px 16px', marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#D4A8D0', letterSpacing: 0.8, marginBottom: 5 }}>📢 ALERT FROM ADMIN</div>
+            <div style={{ fontSize: 14, color: '#F7EFF6', fontWeight: 600, lineHeight: 1.5 }}>{settings.broadcast}</div>
           </div>
         )}
 
@@ -472,18 +472,18 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
                   <button key={i} onClick={() => onToggleStop(progKey, i, checked)} style={{
                     display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
                     borderRadius: 8, border: `1.5px solid ${done ? C.green : C.border}`,
-                    background: done ? C.greenbg : C.white, cursor: 'pointer', textAlign: 'left',
+                    background: done ? C.green : C.white, cursor: 'pointer', textAlign: 'left',
                     transition: 'all 0.15s',
                   }}>
                     <div style={{
                       width: 20, height: 20, borderRadius: 4, flexShrink: 0,
-                      background: done ? C.green : C.white,
-                      border: `2px solid ${done ? C.green : C.border}`,
+                      background: done ? C.white : C.white,
+                      border: `2px solid ${done ? C.white : C.border}`,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}>
-                      {done && <span style={{ color: C.white, fontSize: 13, lineHeight: 1 }}>✓</span>}
+                      {done && <span style={{ color: C.green, fontSize: 13, lineHeight: 1 }}>✓</span>}
                     </div>
-                    <span style={{ fontSize: 14, fontWeight: done ? 600 : 400, color: done ? C.green : C.text, textDecoration: done ? 'line-through' : 'none', opacity: done ? 0.7 : 1 }}>{stop}</span>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: done ? C.white : C.text, textDecoration: done ? 'line-through' : 'none' }}>{stop}</span>
                   </button>
                 );
               })}
@@ -523,8 +523,8 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
               {[{ k: 'cash', label: '💵 Cash' }, { k: 'check', label: '📝 Check' }].map(t => (
                 <button key={t.k} onClick={() => setType(t.k)} style={{
                   flex: 1, padding: '11px', borderRadius: 8, cursor: 'pointer', fontFamily: font, fontWeight: 600, fontSize: 15,
-                  background: type === t.k ? (t.k === 'cash' ? C.greenbg : C.tag) : C.white,
-                  color:      type === t.k ? (t.k === 'cash' ? C.green   : C.navy) : C.muted,
+                  background: type === t.k ? (t.k === 'cash' ? C.green : C.navy) : C.white,
+                  color:      type === t.k ? C.white : C.muted,
                   border:     `2px solid ${type === t.k ? (t.k === 'cash' ? C.green : C.navy) : C.border}`,
                   transition: 'all 0.15s',
                 }}>{t.label}</button>
@@ -578,7 +578,7 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
           <button onClick={handleAdd} disabled={!canAdd} style={{
             width: '100%', padding: '15px', borderRadius: 10, border: 'none',
             background: flash ? C.green : (canAdd ? C.gold : C.border),
-            color: flash ? C.white : (canAdd ? C.navy : C.muted),
+            color: C.white,
             fontSize: 20, fontFamily: fontHead, fontWeight: 700, letterSpacing: 1,
             cursor: canAdd ? 'pointer' : 'not-allowed',
             transition: 'background 0.2s, color 0.2s',
@@ -1229,7 +1229,7 @@ function MapTab({ donations, routes, settings }) {
         </div>
 
         {!settings.city && (
-          <div style={{ padding: '16px', background: C.goldbg, fontSize: 13, color: '#5a3a00' }}>
+          <div style={{ padding: '16px', background: C.goldbg, fontSize: 13, color: C.text }}>
             💡 Go to <strong>Settings</strong> and enter your city/town so the map can geocode donor addresses.
           </div>
         )}
