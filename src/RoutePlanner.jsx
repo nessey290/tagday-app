@@ -489,7 +489,7 @@ function StepGenerate({ streets, onGenerated, onBack }) {
       </Card>
 
       <div style={{ background: C.bg, borderRadius: 10, padding: '12px 16px', marginBottom: 24, fontSize: 13, color: C.muted }}>
-        Estimated master routes: <strong style={{ color: C.green }}>{estRoutes}</strong> routes × 3 hours each × 4 students
+        Estimated master routes: <strong style={{ color: C.green }}>{estRoutes}</strong> routes × 2.5 hours each × 4 students
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
