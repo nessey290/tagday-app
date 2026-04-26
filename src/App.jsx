@@ -382,16 +382,38 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     setMapProgress(15);
 
-    // Step 2: Geocode each street centroid using Photon
+    // Step 2: Geocode two endpoints per street using Photon (low + high address numbers)
+    // This lets OSRM route through the full street length rather than just the midpoint
     const streetCoords = [];
     for (let i = 0; i < stops.length; i++) {
       try {
-        const q   = encodeURIComponent(`${stops[i]}, ${city}`);
-        const res  = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=1`);
+        // Fetch multiple results and take the two most geographically spread points
+        const q    = encodeURIComponent(`${stops[i]}, ${city}`);
+        const res  = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=5`);
         const data = await res.json();
-        if (data?.features?.[0]) {
-          const [lng, lat] = data.features[0].geometry.coordinates;
-          streetCoords.push({ name: stops[i], lat, lng });
+        const features = (data?.features || []).filter(f => {
+          const p = f.properties;
+          // Only keep results that look like this street (name match)
+          const name = (p.street || p.name || '').toLowerCase();
+          return name.includes(stops[i].toLowerCase().split(' ')[0].toLowerCase());
+        });
+        if (features.length >= 2) {
+          // Find the two most distant points to get street ends
+          let maxDist = 0, ptA = null, ptB = null;
+          for (let a = 0; a < features.length; a++) {
+            for (let b = a + 1; b < features.length; b++) {
+              const [lngA, latA] = features[a].geometry.coordinates;
+              const [lngB, latB] = features[b].geometry.coordinates;
+              const d = Math.hypot(latA - latB, lngA - lngB);
+              if (d > maxDist) { maxDist = d; ptA = features[a]; ptB = features[b]; }
+            }
+          }
+          const [lngA, latA] = ptA.geometry.coordinates;
+          const [lngB, latB] = ptB.geometry.coordinates;
+          streetCoords.push({ name: stops[i], lat: latA, lng: lngA, endLat: latB, endLng: lngB, hasEnd: true });
+        } else if (features.length === 1) {
+          const [lng, lat] = features[0].geometry.coordinates;
+          streetCoords.push({ name: stops[i], lat, lng, hasEnd: false });
         }
       } catch {}
       setMapProgress(15 + Math.round(((i + 1) / stops.length) * 55));
@@ -405,7 +427,7 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     setMapProgress(75);
 
-    // Step 3: Order streets by nearest-neighbor from JRHS
+    // Step 3: Order streets by nearest-neighbor from JRHS (using start point)
     const ordered = [];
     const remaining = [...streetCoords];
     let cur = jrhsCoords;
@@ -417,32 +439,34 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       });
       const next = remaining.splice(bestIdx, 1)[0];
       ordered.push(next);
-      cur = next;
+      cur = next.hasEnd ? { lat: next.endLat, lng: next.endLng } : next;
     }
 
     setMapProgress(85);
 
-    // Step 4: Query OSRM route through JRHS → all streets
-    // OSRM route gives us actual road geometry
+    // Step 4: Build OSRM waypoints — each street contributes start AND end point
+    // so OSRM routes through the full street length
+    const osrmPoints = [jrhsCoords];
+    ordered.forEach(s => {
+      osrmPoints.push({ lat: s.lat, lng: s.lng });
+      if (s.hasEnd) osrmPoints.push({ lat: s.endLat, lng: s.endLng });
+    });
+
     let routeGeometry = null;
-    let waypoints     = [];
     try {
-      const coords = [jrhsCoords, ...ordered]
-        .map(p => `${p.lng},${p.lat}`)
-        .join(';');
-      const url  = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=polyline`;
-      const res  = await fetch(url);
-      const data = await res.json();
+      const coords = osrmPoints.map(p => `${p.lng},${p.lat}`).join(';');
+      const url    = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=polyline`;
+      const res    = await fetch(url);
+      const data   = await res.json();
       if (data.code === 'Ok' && data.routes?.[0]) {
         routeGeometry = decodePolyline(data.routes[0].geometry);
-        waypoints     = data.waypoints || [];
       }
     } catch (e) {
       console.warn('OSRM route failed:', e);
     }
 
     setMapProgress(100);
-    setMapPoints({ ordered, jrhsCoords, routeGeometry, waypoints });
+    setMapPoints({ ordered, jrhsCoords, routeGeometry });
     setMapLoading(false);
   };
 
