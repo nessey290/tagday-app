@@ -361,6 +361,11 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
   // Build route map using OSRM for real road geometry
   const openRouteMap = async () => {
+    // Destroy any stale Leaflet instance — the div is remounted each time the modal opens
+    if (leafletRef.current) {
+      try { leafletRef.current.remove(); } catch {}
+      leafletRef.current = null;
+    }
     setShowMap(true);
     setMapPoints([]);
     if (!stops.length) return;
@@ -382,42 +387,33 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     setMapProgress(15);
 
-    // Step 2: Geocode two endpoints per street using Photon (low + high address numbers)
-    // This lets OSRM route through the full street length rather than just the midpoint
+    // Step 2: Geocode each street using Photon — get centroid reliably
     const streetCoords = [];
     for (let i = 0; i < stops.length; i++) {
       try {
-        // Fetch multiple results and take the two most geographically spread points
         const q    = encodeURIComponent(`${stops[i]}, ${city}`);
-        const res  = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=5`);
+        const res  = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=3`);
         const data = await res.json();
-        const features = (data?.features || []).filter(f => {
+        // Take first result that has a street property matching our stop
+        const features = data?.features || [];
+        let best = features[0]; // default to first result
+        for (const f of features) {
           const p = f.properties;
-          // Only keep results that look like this street (name match)
-          const name = (p.street || p.name || '').toLowerCase();
-          return name.includes(stops[i].toLowerCase().split(' ')[0].toLowerCase());
-        });
-        if (features.length >= 2) {
-          // Find the two most distant points to get street ends
-          let maxDist = 0, ptA = null, ptB = null;
-          for (let a = 0; a < features.length; a++) {
-            for (let b = a + 1; b < features.length; b++) {
-              const [lngA, latA] = features[a].geometry.coordinates;
-              const [lngB, latB] = features[b].geometry.coordinates;
-              const d = Math.hypot(latA - latB, lngA - lngB);
-              if (d > maxDist) { maxDist = d; ptA = features[a]; ptB = features[b]; }
-            }
+          const street = (p.street || p.name || '').toLowerCase();
+          const stopWords = stops[i].toLowerCase().split(' ');
+          // Prefer a result where the first word of the stop name appears in the result
+          if (stopWords.some(w => w.length > 3 && street.includes(w))) {
+            best = f;
+            break;
           }
-          const [lngA, latA] = ptA.geometry.coordinates;
-          const [lngB, latB] = ptB.geometry.coordinates;
-          streetCoords.push({ name: stops[i], lat: latA, lng: lngA, endLat: latB, endLng: lngB, hasEnd: true });
-        } else if (features.length === 1) {
-          const [lng, lat] = features[0].geometry.coordinates;
-          streetCoords.push({ name: stops[i], lat, lng, hasEnd: false });
+        }
+        if (best) {
+          const [lng, lat] = best.geometry.coordinates;
+          streetCoords.push({ name: stops[i], lat, lng });
         }
       } catch {}
-      setMapProgress(15 + Math.round(((i + 1) / stops.length) * 55));
-      await new Promise(r => setTimeout(r, 300));
+      setMapProgress(15 + Math.round(((i + 1) / stops.length) * 60));
+      await new Promise(r => setTimeout(r, 250));
     }
 
     if (streetCoords.length === 0) {
@@ -425,9 +421,9 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       return;
     }
 
-    setMapProgress(75);
+    setMapProgress(78);
 
-    // Step 3: Order streets by nearest-neighbor from JRHS (using start point)
+    // Step 3: Order streets by nearest-neighbor from JRHS
     const ordered = [];
     const remaining = [...streetCoords];
     let cur = jrhsCoords;
@@ -439,24 +435,20 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       });
       const next = remaining.splice(bestIdx, 1)[0];
       ordered.push(next);
-      cur = next.hasEnd ? { lat: next.endLat, lng: next.endLng } : next;
+      cur = next;
     }
 
     setMapProgress(85);
 
-    // Step 4: Build OSRM waypoints — each street contributes start AND end point
-    const osrmPoints = [jrhsCoords];
-    ordered.forEach(s => {
-      osrmPoints.push({ lat: s.lat, lng: s.lng });
-      if (s.hasEnd) osrmPoints.push({ lat: s.endLat, lng: s.endLng });
-    });
+    // Step 4: Build OSRM waypoints — JRHS + each street centroid
+    const osrmPoints = [jrhsCoords, ...ordered];
 
-    // Batch into chunks of 90 waypoints with 1-point overlap to stitch segments
+    // Batch into chunks of 90 with 1-point overlap to handle long routes
     const BATCH = 90;
     let routeGeometry = [];
     try {
       for (let i = 0; i < osrmPoints.length; i += BATCH - 1) {
-        const batch  = osrmPoints.slice(i, i + BATCH);
+        const batch = osrmPoints.slice(i, i + BATCH);
         if (batch.length < 2) break;
         const coords = batch.map(p => `${p.lng},${p.lat}`).join(';');
         const url    = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=polyline`;
@@ -464,15 +456,12 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         const data   = await res.json();
         if (data.code === 'Ok' && data.routes?.[0]) {
           const seg = decodePolyline(data.routes[0].geometry);
-          // Skip first point on subsequent segments to avoid duplicating the overlap
           routeGeometry = routeGeometry.concat(i === 0 ? seg : seg.slice(1));
         }
-        if (i + BATCH < osrmPoints.length) {
-          await new Promise(r => setTimeout(r, 200));
-        }
+        if (i + BATCH - 1 < osrmPoints.length) await new Promise(r => setTimeout(r, 300));
       }
     } catch (e) {
-      console.warn('OSRM route failed:', e);
+      console.warn('OSRM failed:', e);
     }
 
     setMapProgress(100);
