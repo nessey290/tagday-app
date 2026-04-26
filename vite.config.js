@@ -1,12 +1,15 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tag Day Route Planner</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/routes-entry.jsx"></script>
-  </body>
-</html>
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import { resolve } from 'path'
+
+export default defineConfig({
+  plugins: [react()],
+  build: {
+    rollupOptions: {
+      input: {
+        main:   resolve(__dirname, 'index.html'),
+        routes: resolve(__dirname, 'routes.html'),
+      },
+    },
+  },
+})
