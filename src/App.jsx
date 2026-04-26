@@ -269,52 +269,6 @@ function DriverSetup({ routes, settings, onStart, onBack }) {
   );
 }
 
-/* ── JRHS starting coordinates ── */
-const JRHS = { lat: 37.5185, lng: -77.6255 };
-
-function haverDist(a, b) {
-  const R = 6371000;
-  const φ1 = a.lat * Math.PI/180, φ2 = b.lat * Math.PI/180;
-  const Δφ = (b.lat - a.lat) * Math.PI/180;
-  const Δλ = (b.lng - a.lng) * Math.PI/180;
-  const x = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
-}
-
-async function fetchStreetGeom(streetName, clat, clng) {
-  const q = `[out:json][timeout:15];way["name"="${streetName}"](around:4000,${clat},${clng});out geom;`;
-  const res = await fetch('https://overpass-api.de/api/interpreter', {
-    method: 'POST',
-    body: `data=${encodeURIComponent(q)}`
-  });
-  const data = await res.json();
-  if (!data.elements?.length) return null;
-  const allPts = data.elements.flatMap(el =>
-    (el.geometry || []).map(g => ({ lat: g.lat, lng: g.lon }))
-  );
-  return allPts.filter((p, i) => i === 0 || p.lat !== allPts[i-1].lat || p.lng !== allPts[i-1].lng);
-}
-
-function orderStreets(streets, start) {
-  const rem = streets.filter(s => s.points?.length >= 2).map(s => ({ ...s }));
-  const ordered = [];
-  let cur = start;
-  while (rem.length > 0) {
-    let best = 0, bestDist = Infinity, bestRev = false;
-    rem.forEach((s, i) => {
-      const d1 = haverDist(cur, s.points[0]);
-      const d2 = haverDist(cur, s.points[s.points.length-1]);
-      if (d1 < bestDist) { bestDist = d1; best = i; bestRev = false; }
-      if (d2 < bestDist) { bestDist = d2; best = i; bestRev = true; }
-    });
-    const s = rem.splice(best, 1)[0];
-    if (bestRev) s.points = [...s.points].reverse();
-    ordered.push(s);
-    cur = s.points[s.points.length-1];
-  }
-  return ordered;
-}
-
 /* ══════════════════════════════════════════════════
    DRIVER SCREEN
 ══════════════════════════════════════════════════ */
@@ -388,21 +342,37 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
   const selectSuggestion = (s) => { setAddress(s); setSuggestions([]); };
 
-  // Fetch full street geometry and build ordered route from JRHS
+  // Decode OSRM polyline (precision 5 or 6)
+  const decodePolyline = (encoded, precision = 5) => {
+    const factor = Math.pow(10, precision);
+    const coords = [];
+    let index = 0, lat = 0, lng = 0;
+    while (index < encoded.length) {
+      let shift = 0, result = 0, byte;
+      do { byte = encoded.charCodeAt(index++) - 63; result |= (byte & 0x1f) << shift; shift += 5; } while (byte >= 0x20);
+      lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+      shift = 0; result = 0;
+      do { byte = encoded.charCodeAt(index++) - 63; result |= (byte & 0x1f) << shift; shift += 5; } while (byte >= 0x20);
+      lng += (result & 1) ? ~(result >> 1) : (result >> 1);
+      coords.push([lat / factor, lng / factor]);
+    }
+    return coords;
+  };
+
+  // Build route map using OSRM for real road geometry
   const openRouteMap = async () => {
     setShowMap(true);
-    setMapPoints([]); // Always re-fetch fresh
+    setMapPoints([]);
     if (!stops.length) return;
     setMapLoading(true);
     setMapProgress(5);
 
     const city = settings.city || 'Midlothian, VA';
 
-    // Geocode JRHS accurately
-    let jrhsCoords = { ...JRHS };
+    // Step 1: Geocode JRHS
+    let jrhsCoords = { lat: 37.5185, lng: -77.6255 };
     try {
-      const q = encodeURIComponent('James River High School, Midlothian, VA');
-      const res = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=1`);
+      const res  = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent('James River High School Midlothian VA')}&limit=1`);
       const data = await res.json();
       if (data?.features?.[0]) {
         const [lng, lat] = data.features[0].geometry.coordinates;
@@ -410,122 +380,122 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       }
     } catch {}
 
-    setMapProgress(20);
+    setMapProgress(15);
 
-    // Fetch ALL named residential roads near JRHS via allorigins proxy (handles CORS)
-    let byName = {};
-    try {
-      const q = `[out:json][timeout:25];way["highway"~"residential|living_street|tertiary"]["name"](around:4000,${jrhsCoords.lat},${jrhsCoords.lng});out body geom;`;
-      const overpassUrl = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`;
-      const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(overpassUrl)}`);
-      const data = await res.json();
-      (data.elements || []).forEach(el => {
-        const name = el.tags?.name;
-        if (!name || !el.geometry?.length) return;
-        if (!byName[name]) byName[name] = [];
-        const pts = el.geometry.map(g => ({ lat: g.lat, lng: g.lon }));
-        if (pts.length >= 2) byName[name].push(pts);
-      });
-    } catch (e) {
-      console.warn('Overpass failed:', e);
-    }
-
-    setMapProgress(70);
-
-    const streets = [];
+    // Step 2: Geocode each street centroid using Photon
+    const streetCoords = [];
     for (let i = 0; i < stops.length; i++) {
-      const segs = byName[stops[i]];
-      if (segs?.length > 0) {
-        const firstPt = segs[0][0];
-        const lastSeg = segs[segs.length - 1];
-        const lastPt  = lastSeg[lastSeg.length - 1];
-        streets.push({ name: stops[i], segments: segs, points: [firstPt, lastPt] });
-      } else {
-        // Photon fallback for streets not found in Overpass
-        try {
-          const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(`${stops[i]}, ${city}`)}&limit=1`);
-          const data = await res.json();
-          if (data?.features?.[0]) {
-            const [lng, lat] = data.features[0].geometry.coordinates;
-            const pts = [{ lat: lat + 0.0003, lng }, { lat, lng }, { lat: lat - 0.0003, lng }];
-            streets.push({ name: stops[i], segments: [pts], points: [pts[0], pts[2]] });
-          }
-        } catch {}
-        await new Promise(r => setTimeout(r, 800));
-      }
-      setMapProgress(70 + Math.round(((i+1)/stops.length)*25));
+      try {
+        const q   = encodeURIComponent(`${stops[i]}, ${city}`);
+        const res  = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=1`);
+        const data = await res.json();
+        if (data?.features?.[0]) {
+          const [lng, lat] = data.features[0].geometry.coordinates;
+          streetCoords.push({ name: stops[i], lat, lng });
+        }
+      } catch {}
+      setMapProgress(15 + Math.round(((i + 1) / stops.length) * 55));
+      await new Promise(r => setTimeout(r, 300));
     }
 
-    const ordered = orderStreets(streets, jrhsCoords);
-    ordered._jrhs = jrhsCoords;
-    setMapPoints(ordered);
+    if (streetCoords.length === 0) {
+      setMapLoading(false);
+      return;
+    }
+
+    setMapProgress(75);
+
+    // Step 3: Order streets by nearest-neighbor from JRHS
+    const ordered = [];
+    const remaining = [...streetCoords];
+    let cur = jrhsCoords;
+    while (remaining.length > 0) {
+      let bestIdx = 0, bestDist = Infinity;
+      remaining.forEach((s, i) => {
+        const d = Math.hypot(s.lat - cur.lat, s.lng - cur.lng);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      });
+      const next = remaining.splice(bestIdx, 1)[0];
+      ordered.push(next);
+      cur = next;
+    }
+
+    setMapProgress(85);
+
+    // Step 4: Query OSRM route through JRHS → all streets
+    // OSRM route gives us actual road geometry
+    let routeGeometry = null;
+    let waypoints     = [];
+    try {
+      const coords = [jrhsCoords, ...ordered]
+        .map(p => `${p.lng},${p.lat}`)
+        .join(';');
+      const url  = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=polyline`;
+      const res  = await fetch(url);
+      const data = await res.json();
+      if (data.code === 'Ok' && data.routes?.[0]) {
+        routeGeometry = decodePolyline(data.routes[0].geometry);
+        waypoints     = data.waypoints || [];
+      }
+    } catch (e) {
+      console.warn('OSRM route failed:', e);
+    }
+
+    setMapProgress(100);
+    setMapPoints({ ordered, jrhsCoords, routeGeometry, waypoints });
     setMapLoading(false);
   };
 
-  // Render Leaflet map with full street polylines
+  // Render Leaflet map with OSRM road geometry
   useEffect(() => {
-    if (!showMap || mapLoading) return;
+    if (!showMap || mapLoading || !mapPoints?.ordered) return;
     injectLeaflet().then(() => {
       const container = document.getElementById('driver-route-map');
       if (!container) return;
       let map = leafletRef.current;
       if (!map) {
-        map = window.L.map('driver-route-map').setView([37.564, -77.573], 14);
+        map = window.L.map('driver-route-map').setView([37.519, -77.625], 14);
         window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-          attribution: '© OpenStreetMap', maxZoom: 19
+          attribution: '© OpenStreetMap', maxZoom: 19,
         }).addTo(map);
         leafletRef.current = map;
       }
-      map.eachLayer(l => {
-        if (l instanceof window.L.Marker || l instanceof window.L.Polyline) map.removeLayer(l);
-      });
-      if (mapPoints.length === 0) return;
+      map.eachLayer(l => { if (l instanceof window.L.Marker || l instanceof window.L.Polyline) map.removeLayer(l); });
 
-      const jrhs = mapPoints._jrhs || JRHS;
-      const STREET_COLORS = ['#964B8C','#1E5C3A','#C9912A','#2A7A4E','#7B3F9E','#2E8B57','#B5470F','#1A6B8A'];
-      const streetBounds = [];
+      const { ordered, jrhsCoords, routeGeometry } = mapPoints;
+      const bounds = [];
 
-      // JRHS school marker — not included in fitBounds
+      // Draw OSRM road geometry — this follows actual roads like Google Maps
+      if (routeGeometry?.length > 1) {
+        window.L.polyline(routeGeometry, {
+          color: C.navy, weight: 6, opacity: 0.85,
+        }).addTo(map);
+        routeGeometry.forEach(p => bounds.push(p));
+      }
+
+      // JRHS school marker
       const schoolIcon = window.L.divIcon({
         className: '',
-        html: `<div style="width:34px;height:34px;border-radius:50%;background:#333;border:3px solid white;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 8px rgba(0,0,0,0.4)">🏫</div>`,
-        iconSize: [34,34], iconAnchor: [17,17]
+        html: `<div style="width:36px;height:36px;border-radius:50%;background:#333;border:3px solid white;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 2px 8px rgba(0,0,0,0.4)">🏫</div>`,
+        iconSize: [36,36], iconAnchor: [18,18],
       });
-      window.L.marker([jrhs.lat, jrhs.lng], { icon: schoolIcon }).addTo(map)
-        .bindPopup('<b>James River High School</b><br>Starting point for all drivers');
+      window.L.marker([jrhsCoords.lat, jrhsCoords.lng], { icon: schoolIcon })
+        .addTo(map).bindPopup('<b>James River High School</b><br>Starting point');
 
-      mapPoints.forEach((street, i) => {
-        const color = STREET_COLORS[i % STREET_COLORS.length];
-
-        // Draw each OSM way segment as its own polyline (same color)
-        const segs = street.segments || [street.points];
-        segs.forEach(seg => {
-          const pts = seg.map(p => [p.lat, p.lng]);
-          window.L.polyline(pts, { color, weight: 7, opacity: 0.85 }).addTo(map);
-          pts.forEach(p => streetBounds.push(p));
-        });
-
-        // Numbered start pin at the approach end
-        const startPt = street.points[0];
+      // Numbered street markers
+      ordered.forEach((street, i) => {
         const icon = window.L.divIcon({
           className: '',
-          html: `<div style="width:28px;height:28px;border-radius:50%;background:${color};border:3px solid white;display:flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.35)">${i+1}</div>`,
-          iconSize: [28,28], iconAnchor: [14,14]
+          html: `<div style="width:30px;height:30px;border-radius:50%;background:${C.gold};border:3px solid white;display:flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.35)">${i+1}</div>`,
+          iconSize: [30,30], iconAnchor: [15,15],
         });
-        window.L.marker([startPt.lat, startPt.lng], { icon }).addTo(map)
-          .bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>Stop ${i+1}: ${street.name}</b></div>`);
-
-        // Dashed connector from previous end (or JRHS) to this street's start
-        const prevEnd = i === 0 ? jrhs : mapPoints[i-1].points[mapPoints[i-1].points.length-1];
-        window.L.polyline([[prevEnd.lat, prevEnd.lng],[startPt.lat, startPt.lng]], {
-          color: '#888', weight: 2, opacity: 0.55, dashArray: '7,9'
-        }).addTo(map);
+        window.L.marker([street.lat, street.lng], { icon })
+          .addTo(map)
+          .bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>Stop ${i+1}</b><br>${street.name}</div>`);
+        bounds.push([street.lat, street.lng]);
       });
 
-      // Fit to streets only so they stay clearly visible at street level
-      if (streetBounds.length > 0) {
-        map.fitBounds(streetBounds, { padding: [40, 40] });
-      }
+      if (bounds.length > 0) map.fitBounds(bounds, { padding: [40, 40] });
     });
   }, [showMap, mapLoading, mapPoints]);
 
