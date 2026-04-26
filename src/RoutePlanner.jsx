@@ -326,20 +326,49 @@ function StepImport({ onComplete }) {
           if (!lat || !lng) continue;
 
           if (!streetMap[norm]) {
-            streetMap[norm] = { id: Math.random().toString(36).substr(2, 8), name: norm, subdivision, houses: 0, latSum: 0, lngSum: 0, density: 'typical' };
+            streetMap[norm] = {
+              id: Math.random().toString(36).substr(2, 8),
+              name: norm, subdivision, houses: 0,
+              latSum: 0, lngSum: 0, density: 'typical',
+              // Track all address points to find street endpoints
+              points: [],
+            };
           }
           streetMap[norm].houses++;
           streetMap[norm].latSum += lat;
           streetMap[norm].lngSum += lng;
+          streetMap[norm].points.push({ lat, lng });
           if (!streetMap[norm].subdivision && subdivision) streetMap[norm].subdivision = subdivision;
         }
 
-        let streets = Object.values(streetMap).map(s => ({
-          ...s,
-          lat:     s.latSum / s.houses,
-          lng:     s.lngSum / s.houses,
-          density: s.houses > 25 ? 'dense' : s.houses < 10 ? 'large' : 'typical',
-        }));
+        let streets = Object.values(streetMap).map(s => {
+          // Find the two most geographically distant address points — these are the street endpoints
+          let startCoord = null, endCoord = null;
+          if (s.points.length >= 2) {
+            let maxDist = 0;
+            for (let a = 0; a < s.points.length; a++) {
+              for (let b = a + 1; b < s.points.length; b++) {
+                const d = Math.hypot(s.points[a].lat - s.points[b].lat, s.points[a].lng - s.points[b].lng);
+                if (d > maxDist) {
+                  maxDist = d;
+                  startCoord = s.points[a];
+                  endCoord   = s.points[b];
+                }
+              }
+            }
+          } else if (s.points.length === 1) {
+            startCoord = s.points[0];
+          }
+          return {
+            ...s,
+            lat:        s.latSum / s.houses,
+            lng:        s.lngSum / s.houses,
+            density:    s.houses > 25 ? 'dense' : s.houses < 10 ? 'large' : 'typical',
+            startCoord,
+            endCoord,
+            points:     undefined, // don't carry the full array forward
+          };
+        });
 
         if (streets.length === 0) {
           setStatus('error'); setError('No James River streets found. Check the file.');
@@ -682,6 +711,12 @@ function StepDeploy({ routes, onBack }) {
     shift,
     description: r.streets.map(s => s.name).join('\n'),
     doNotVisit:  '',
+    // Street endpoints for accurate map routing in Tag Day app
+    streetCoords: r.streets.map(s => ({
+      name:       s.name,
+      startCoord: s.startCoord || null,
+      endCoord:   s.endCoord   || null,
+    })),
   }));
 
   const morningTD   = toTagDayFormat(morningRoutes,   'Morning');

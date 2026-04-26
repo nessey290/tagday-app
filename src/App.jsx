@@ -374,10 +374,21 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     const city = settings.city || 'Midlothian, VA';
 
+    // James River HS district bounding box — tighter than county, better geocoding accuracy
+    const BBOX = 'bbox=-77.70,37.46,-77.55,37.56';
+
     // Step 1: Geocode JRHS
     let jrhsCoords = { lat: 37.5185, lng: -77.6255 };
     try {
-      const res  = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent('James River High School Midlothian VA')}&limit=1`);
+      const res  = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent('James River High School Midlothian VA')}&limit=1&${BBOX}`);
+      const data = await res.json();
+      if (data?.features?.[0]) {
+        const [lng, lat] = data.features[0].geometry.coordinates;
+        jrhsCoords = { lat, lng };
+      }
+    } catch {}
+    try {
+      const res  = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent('James River High School Midlothian VA')}&limit=1&${BBOX}`);
       const data = await res.json();
       if (data?.features?.[0]) {
         const [lng, lat] = data.features[0].geometry.coordinates;
@@ -387,29 +398,48 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     setMapProgress(15);
 
-    // Step 2: Geocode each street using Photon — get centroid reliably
+    // Step 2: Get street endpoints — use pre-computed coords from route data if available,
+    // otherwise fall back to Photon geocoding
     const streetCoords = [];
+    const precomputed  = route?.streetCoords || [];
+
     for (let i = 0; i < stops.length; i++) {
+      // Check if we have pre-computed endpoints from the Route Planner
+      const pre = precomputed.find(s => s.name === stops[i]);
+      if (pre?.startCoord && pre?.endCoord) {
+        streetCoords.push({
+          name:     stops[i],
+          lat:      pre.startCoord.lat,
+          lng:      pre.startCoord.lng,
+          endLat:   pre.endCoord.lat,
+          endLng:   pre.endCoord.lng,
+          hasEnd:   true,
+        });
+        setMapProgress(15 + Math.round(((i + 1) / stops.length) * 60));
+        continue;
+      }
+      if (pre?.startCoord) {
+        streetCoords.push({ name: stops[i], lat: pre.startCoord.lat, lng: pre.startCoord.lng, hasEnd: false });
+        setMapProgress(15 + Math.round(((i + 1) / stops.length) * 60));
+        continue;
+      }
+
+      // Photon fallback for streets without pre-computed coords
       try {
         const q    = encodeURIComponent(`${stops[i]}, ${city}`);
-        const res  = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=3`);
+        const res  = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=3&${BBOX}`);
         const data = await res.json();
-        // Take first result that has a street property matching our stop
         const features = data?.features || [];
-        let best = features[0]; // default to first result
+        let best = features[0];
         for (const f of features) {
           const p = f.properties;
           const street = (p.street || p.name || '').toLowerCase();
           const stopWords = stops[i].toLowerCase().split(' ');
-          // Prefer a result where the first word of the stop name appears in the result
-          if (stopWords.some(w => w.length > 3 && street.includes(w))) {
-            best = f;
-            break;
-          }
+          if (stopWords.some(w => w.length > 3 && street.includes(w))) { best = f; break; }
         }
         if (best) {
           const [lng, lat] = best.geometry.coordinates;
-          streetCoords.push({ name: stops[i], lat, lng });
+          streetCoords.push({ name: stops[i], lat, lng, hasEnd: false });
         }
       } catch {}
       setMapProgress(15 + Math.round(((i + 1) / stops.length) * 60));
@@ -435,13 +465,18 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       });
       const next = remaining.splice(bestIdx, 1)[0];
       ordered.push(next);
-      cur = next;
+      // Advance from the far end of the street for better ordering
+      cur = next.hasEnd ? { lat: next.endLat, lng: next.endLng } : next;
     }
 
     setMapProgress(85);
 
-    // Step 4: Build OSRM waypoints — JRHS + each street centroid
-    const osrmPoints = [jrhsCoords, ...ordered];
+    // Step 4: Build OSRM waypoints — use both endpoints per street when available
+    const osrmPoints = [jrhsCoords];
+    ordered.forEach(s => {
+      osrmPoints.push({ lat: s.lat, lng: s.lng });
+      if (s.hasEnd) osrmPoints.push({ lat: s.endLat, lng: s.endLng });
+    });
 
     // Batch into chunks of 90 with 1-point overlap to handle long routes
     const BATCH = 90;
