@@ -445,21 +445,31 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
     setMapProgress(85);
 
     // Step 4: Build OSRM waypoints — each street contributes start AND end point
-    // so OSRM routes through the full street length
     const osrmPoints = [jrhsCoords];
     ordered.forEach(s => {
       osrmPoints.push({ lat: s.lat, lng: s.lng });
       if (s.hasEnd) osrmPoints.push({ lat: s.endLat, lng: s.endLng });
     });
 
-    let routeGeometry = null;
+    // Batch into chunks of 90 waypoints with 1-point overlap to stitch segments
+    const BATCH = 90;
+    let routeGeometry = [];
     try {
-      const coords = osrmPoints.map(p => `${p.lng},${p.lat}`).join(';');
-      const url    = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=polyline`;
-      const res    = await fetch(url);
-      const data   = await res.json();
-      if (data.code === 'Ok' && data.routes?.[0]) {
-        routeGeometry = decodePolyline(data.routes[0].geometry);
+      for (let i = 0; i < osrmPoints.length; i += BATCH - 1) {
+        const batch  = osrmPoints.slice(i, i + BATCH);
+        if (batch.length < 2) break;
+        const coords = batch.map(p => `${p.lng},${p.lat}`).join(';');
+        const url    = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=polyline`;
+        const res    = await fetch(url);
+        const data   = await res.json();
+        if (data.code === 'Ok' && data.routes?.[0]) {
+          const seg = decodePolyline(data.routes[0].geometry);
+          // Skip first point on subsequent segments to avoid duplicating the overlap
+          routeGeometry = routeGeometry.concat(i === 0 ? seg : seg.slice(1));
+        }
+        if (i + BATCH < osrmPoints.length) {
+          await new Promise(r => setTimeout(r, 200));
+        }
       }
     } catch (e) {
       console.warn('OSRM route failed:', e);
