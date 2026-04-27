@@ -61,6 +61,30 @@ function dist(a, b) {
   return Math.sqrt(dlat * dlat + dlng * dlng);
 }
 
+function pointInRing(lng, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi))
+      inside = !inside;
+  }
+  return inside;
+}
+
+// Check if a coordinate is inside a MultiPolygon district boundary
+// districtPolygons = array of polygon coordinate arrays (from GeoJSON MultiPolygon)
+function isInDistrict(lng, lat, districtPolygons) {
+  if (!districtPolygons?.length) return true; // no boundary = allow all
+  return districtPolygons.some(poly => {
+    const rings = poly; // each poly is an array of rings; [0] = outer, rest = holes
+    if (!pointInRing(lng, lat, rings[0])) return false;
+    for (let i = 1; i < rings.length; i++) {
+      if (pointInRing(lng, lat, rings[i])) return false;
+    }
+    return true;
+  });
+}
+
 function fmtTime(mins) {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
@@ -303,6 +327,10 @@ function StepImport({ onComplete }) {
         const streetMap = {};
         let totalParsed = 0, totalJR = 0;
 
+        // Extract district boundary if present in a separate boundary layer
+        // (not in address file — we'll use null and rely on HighSchoolName filter)
+        const districtPolygons = null;
+
         for (const feat of features) {
           const p = feat?.properties;
           if (!p) continue;
@@ -342,23 +370,25 @@ function StepImport({ onComplete }) {
         }
 
         let streets = Object.values(streetMap).map(s => {
-          // Find the two most geographically distant address points — these are the street endpoints
+          const MAX_ENDPOINT_DIST = 0.008; // ~0.5 miles
           let startCoord = null, endCoord = null;
           if (s.points.length >= 2) {
+            // Only consider points inside the district boundary
+            const validPts = districtPolygons
+              ? s.points.filter(p => isInDistrict(p.lng, p.lat, districtPolygons))
+              : s.points;
+            const pts = validPts.length >= 2 ? validPts : s.points;
             let maxDist = 0;
-            for (let a = 0; a < s.points.length; a++) {
-              for (let b = a + 1; b < s.points.length; b++) {
-                const d = Math.hypot(s.points[a].lat - s.points[b].lat, s.points[a].lng - s.points[b].lng);
-                if (d > maxDist) {
-                  maxDist = d;
-                  startCoord = s.points[a];
-                  endCoord   = s.points[b];
+            for (let a = 0; a < pts.length; a++) {
+              for (let b = a + 1; b < pts.length; b++) {
+                const d = Math.hypot(pts[a].lat - pts[b].lat, pts[a].lng - pts[b].lng);
+                if (d > maxDist && d <= MAX_ENDPOINT_DIST) {
+                  maxDist = d; startCoord = pts[a]; endCoord = pts[b];
                 }
               }
             }
-          } else if (s.points.length === 1) {
-            startCoord = s.points[0];
           }
+          if (!startCoord && s.points.length >= 1) startCoord = s.points[0];
           return {
             ...s,
             lat:        s.latSum / s.houses,

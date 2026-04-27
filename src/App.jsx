@@ -114,7 +114,7 @@ function HomeScreen({ onDriver, onAdmin, onResume, savedSession, routes, setting
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: font }}>
       <div style={{ background: C.navy, padding: '48px 24px 36px', textAlign: 'center' }}>
         <div style={{ fontFamily: fontHead, fontSize: 36, fontWeight: 700, color: C.gold, letterSpacing: 3 }}>
-          🎺 {settings.eventName || 'JAMES RIVER REGIMENT'}
+          🎵 {settings.eventName || 'JAMES RIVER REGIMENT'} 🎵
         </div>
         <div style={{ color: C.goldL, fontSize: 14, marginTop: 8 }}>{today}</div>
       </div>
@@ -374,8 +374,8 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     const city = settings.city || 'Midlothian, VA';
 
-    // James River HS district bounding box — tighter than county, better geocoding accuracy
-    const BBOX = 'bbox=-77.70,37.46,-77.55,37.56';
+    // James River HS district bounding box — derived from official boundary file
+    const BBOX = 'bbox=-77.696,37.477,-77.514,37.563';
 
     // Step 1: Geocode JRHS
     let jrhsCoords = { lat: 37.5185, lng: -77.6255 };
