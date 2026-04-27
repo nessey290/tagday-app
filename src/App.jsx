@@ -448,8 +448,9 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         .join('');
       const query = `[out:json][timeout:30];(${conditions});out body geom;`;
 
-      // Use thingproxy as CORS proxy — reliable for Overpass POST requests
-      const res  = await fetch('https://thingproxy.freeboard.io/fetch/https://overpass-api.de/api/interpreter', {
+      // Use allorigins as CORS proxy for Overpass
+      const encodedQuery = encodeURIComponent(`data=${encodeURIComponent(query)}`);
+      const res  = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent('https://overpass-api.de/api/interpreter')}`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body:    `data=${encodeURIComponent(query)}`,
