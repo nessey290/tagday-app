@@ -438,18 +438,16 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     const jrhsLat = jrhsCoords.lat, jrhsLng = jrhsCoords.lng;
 
-    // Step 3: Fetch road geometry one street at a time via serverless proxy
+    // Step 3: Fetch road geometry directly from Overpass via GET
+    // Overpass supports CORS on GET requests - no proxy needed
     const streetGeometries = [];
     for (let i = 0; i < streetCoords.length; i++) {
       const s = streetCoords[i];
-      const query = `[out:json][timeout:15];way["name"="${s.name.replace(/"/g, '')}"](around:6000,${jrhsLat},${jrhsLng});out body geom;`;
+      const query = `[out:json][timeout:15];way["name"="${s.name.replace(/"/g, '')}"](around:5000,${jrhsLat},${jrhsLng});out geom;`;
       let segments = null;
       try {
-        const res  = await fetch('/api/overpass', {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ query }),
-        });
+        const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
+        const res  = await fetch(url);
         const data = await res.json();
         console.log(`${s.name}: ${data.elements?.length} elements`);
         const segs = [];
@@ -460,17 +458,17 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         });
         if (segs.length > 0) segments = segs;
       } catch (e) {
-        console.warn(`Failed to fetch ${s.name}:`, e);
+        console.warn(`Overpass failed for ${s.name}:`, e.message);
       }
-      // Fallback to straight line
       if (!segments) {
-        segments = s.hasEnd
+        const fallback = s.hasEnd
           ? [[s.lat, s.lng], [s.endLat, s.endLng]]
           : [[s.lat, s.lng]];
-        segments = [segments];
+        segments = [fallback];
       }
       streetGeometries.push({ ...s, segments });
       setMapProgress(78 + Math.round(((i + 1) / streetCoords.length) * 20));
+      await new Promise(r => setTimeout(r, 1000)); // be polite to Overpass
     }
 
     setMapProgress(100);
