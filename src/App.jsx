@@ -448,10 +448,11 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         .join('');
       const query = `[out:json][timeout:30];(${conditions});out body geom;`;
 
-      const res  = await fetch('/api/overpass', {
+      // Use thingproxy as CORS proxy — reliable for Overpass POST requests
+      const res  = await fetch('https://thingproxy.freeboard.io/fetch/https://overpass-api.de/api/interpreter', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ query }),
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body:    `data=${encodeURIComponent(query)}`,
       });
       const data = await res.json();
 
