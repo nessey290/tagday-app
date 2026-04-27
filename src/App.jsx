@@ -447,15 +447,17 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         .map(s => `way["name"="${s.name.replace(/"/g, '')}"](around:6000,${jrhsLat},${jrhsLng});`)
         .join('');
       const query = `[out:json][timeout:30];(${conditions});out body geom;`;
+      console.log('Querying streets:', streetCoords.map(s => s.name));
 
       // Use allorigins as CORS proxy for Overpass
-      const encodedQuery = encodeURIComponent(`data=${encodeURIComponent(query)}`);
       const res  = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent('https://overpass-api.de/api/interpreter')}`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body:    `data=${encodeURIComponent(query)}`,
       });
       const data = await res.json();
+      console.log('Overpass response:', data.elements?.length, 'elements');
+      console.log('Sample names:', data.elements?.slice(0,5).map(e => e.tags?.name));
 
       // Group geometry by street name
       const geomByName = {};
