@@ -114,7 +114,7 @@ function HomeScreen({ onDriver, onAdmin, onResume, savedSession, routes, setting
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: font }}>
       <div style={{ background: C.navy, padding: '48px 24px 36px', textAlign: 'center' }}>
         <div style={{ fontFamily: fontHead, fontSize: 36, fontWeight: 700, color: C.gold, letterSpacing: 3 }}>
-          🎵 {settings.eventName || 'JAMES RIVER REGIMENT'} 🎵
+          <span style={{ color: C.goldL, fontSize: 28 }}>♪</span> {settings.eventName || 'JAMES RIVER REGIMENT'} <span style={{ color: C.goldL, fontSize: 28 }}>♪</span>
         </div>
         <div style={{ color: C.goldL, fontSize: 14, marginTop: 8 }}>{today}</div>
       </div>
@@ -342,24 +342,7 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
   const selectSuggestion = (s) => { setAddress(s); setSuggestions([]); };
 
-  // Decode OSRM polyline (precision 5 or 6)
-  const decodePolyline = (encoded, precision = 5) => {
-    const factor = Math.pow(10, precision);
-    const coords = [];
-    let index = 0, lat = 0, lng = 0;
-    while (index < encoded.length) {
-      let shift = 0, result = 0, byte;
-      do { byte = encoded.charCodeAt(index++) - 63; result |= (byte & 0x1f) << shift; shift += 5; } while (byte >= 0x20);
-      lat += (result & 1) ? ~(result >> 1) : (result >> 1);
-      shift = 0; result = 0;
-      do { byte = encoded.charCodeAt(index++) - 63; result |= (byte & 0x1f) << shift; shift += 5; } while (byte >= 0x20);
-      lng += (result & 1) ? ~(result >> 1) : (result >> 1);
-      coords.push([lat / factor, lng / factor]);
-    }
-    return coords;
-  };
-
-  // Build route map using OSRM for real road geometry
+  // Build route map — highlight streets using pre-computed endpoint coordinates
   const openRouteMap = async () => {
     // Destroy any stale Leaflet instance — the div is remounted each time the modal opens
     if (leafletRef.current) {
@@ -451,51 +434,15 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       return;
     }
 
-    setMapProgress(78);
-
-    // Step 3: Use the checklist order (as entered by admin / imported from route planner)
-    // Route planner already orders streets geographically — don't reorder here
-    // as nearest-neighbor can cause cross-highway routing
-    const ordered = streetCoords;
-
-    setMapProgress(85);
-
-    // Step 4: Build OSRM waypoints — use both endpoints per street when available
-    const osrmPoints = [jrhsCoords];
-    ordered.forEach(s => {
-      osrmPoints.push({ lat: s.lat, lng: s.lng });
-      if (s.hasEnd) osrmPoints.push({ lat: s.endLat, lng: s.endLng });
-    });
-
-    // Batch into chunks of 90 with 1-point overlap, using route service (preserves order)
-    const BATCH = 90;
-    let routeGeometry = [];
-    try {
-      for (let i = 0; i < osrmPoints.length; i += BATCH - 1) {
-        const batch  = osrmPoints.slice(i, i + BATCH);
-        if (batch.length < 2) break;
-        const coords = batch.map(p => `${p.lng},${p.lat}`).join(';');
-        const url    = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=polyline`;
-        const res    = await fetch(url);
-        const data   = await res.json();
-        if (data.code === 'Ok' && data.routes?.[0]) {
-          const seg = decodePolyline(data.routes[0].geometry);
-          routeGeometry = routeGeometry.concat(i === 0 ? seg : seg.slice(1));
-        }
-        if (i + BATCH - 1 < osrmPoints.length) await new Promise(r => setTimeout(r, 300));
-      }
-    } catch (e) {
-      console.warn('OSRM failed:', e);
-    }
-
     setMapProgress(100);
-    setMapPoints({ ordered, jrhsCoords, routeGeometry });
+    // No routing needed — just highlight the streets directly
+    setMapPoints({ streetCoords, jrhsCoords });
     setMapLoading(false);
   };
 
-  // Render Leaflet map with OSRM road geometry
+  // Render Leaflet map — highlight streets as colored lines, no routing
   useEffect(() => {
-    if (!showMap || mapLoading || !mapPoints?.ordered) return;
+    if (!showMap || mapLoading || !mapPoints?.streetCoords) return;
     injectLeaflet().then(() => {
       const container = document.getElementById('driver-route-map');
       if (!container) return;
@@ -507,18 +454,10 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         }).addTo(map);
         leafletRef.current = map;
       }
-      map.eachLayer(l => { if (l instanceof window.L.Marker || l instanceof window.L.Polyline) map.removeLayer(l); });
+      map.eachLayer(l => { if (l instanceof window.L.Marker || l instanceof window.L.Polyline || l instanceof window.L.CircleMarker) map.removeLayer(l); });
 
-      const { ordered, jrhsCoords, routeGeometry } = mapPoints;
+      const { streetCoords, jrhsCoords } = mapPoints;
       const bounds = [];
-
-      // Draw OSRM road geometry — this follows actual roads like Google Maps
-      if (routeGeometry?.length > 1) {
-        window.L.polyline(routeGeometry, {
-          color: C.navy, weight: 6, opacity: 0.85,
-        }).addTo(map);
-        routeGeometry.forEach(p => bounds.push(p));
-      }
 
       // JRHS school marker
       const schoolIcon = window.L.divIcon({
@@ -527,19 +466,38 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         iconSize: [36,36], iconAnchor: [18,18],
       });
       window.L.marker([jrhsCoords.lat, jrhsCoords.lng], { icon: schoolIcon })
-        .addTo(map).bindPopup('<b>James River High School</b><br>Starting point');
+        .addTo(map).bindPopup('<b>James River High School</b>');
 
-      // Numbered street markers
-      ordered.forEach((street, i) => {
+      // Draw each street as a highlighted line + numbered pin
+      streetCoords.forEach((s, i) => {
+        const color = C.gold;
+
+        // Draw street as a line if we have both endpoints, otherwise a circle marker
+        if (s.hasEnd) {
+          window.L.polyline(
+            [[s.lat, s.lng], [s.endLat, s.endLng]],
+            { color: C.navy, weight: 6, opacity: 0.85 }
+          ).addTo(map)
+           .bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>${s.name}</b></div>`);
+          bounds.push([s.lat, s.lng], [s.endLat, s.endLng]);
+        } else {
+          window.L.circleMarker([s.lat, s.lng], {
+            radius: 8, fillColor: C.navy, color: 'white', weight: 2, fillOpacity: 0.9,
+          }).addTo(map)
+           .bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>${s.name}</b></div>`);
+          bounds.push([s.lat, s.lng]);
+        }
+
+        // Numbered label pin at midpoint
+        const midLat = s.hasEnd ? (s.lat + s.endLat) / 2 : s.lat;
+        const midLng = s.hasEnd ? (s.lng + s.endLng) / 2 : s.lng;
         const icon = window.L.divIcon({
           className: '',
-          html: `<div style="width:30px;height:30px;border-radius:50%;background:${C.gold};border:3px solid white;display:flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.35)">${i+1}</div>`,
-          iconSize: [30,30], iconAnchor: [15,15],
+          html: `<div style="width:26px;height:26px;border-radius:50%;background:${color};border:2px solid white;display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.3)">${i+1}</div>`,
+          iconSize: [26,26], iconAnchor: [13,13],
         });
-        window.L.marker([street.lat, street.lng], { icon })
-          .addTo(map)
-          .bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>Stop ${i+1}</b><br>${street.name}</div>`);
-        bounds.push([street.lat, street.lng]);
+        window.L.marker([midLat, midLng], { icon }).addTo(map)
+          .bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>${i+1}. ${s.name}</b></div>`);
       });
 
       if (bounds.length > 0) map.fitBounds(bounds, { padding: [40, 40] });
