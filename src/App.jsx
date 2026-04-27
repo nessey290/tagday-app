@@ -453,31 +453,21 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     setMapProgress(78);
 
-    // Step 3: Order streets by nearest-neighbor from JRHS
-    const ordered = [];
-    const remaining = [...streetCoords];
-    let cur = jrhsCoords;
-    while (remaining.length > 0) {
-      let bestIdx = 0, bestDist = Infinity;
-      remaining.forEach((s, i) => {
-        const d = Math.hypot(s.lat - cur.lat, s.lng - cur.lng);
-        if (d < bestDist) { bestDist = d; bestIdx = i; }
-      });
-      const next = remaining.splice(bestIdx, 1)[0];
-      ordered.push(next);
-      // Advance from the far end of the street for better ordering
-      cur = next.hasEnd ? { lat: next.endLat, lng: next.endLng } : next;
-    }
+    // Step 3: Use the checklist order (as entered by admin / imported from route planner)
+    // Route planner already orders streets geographically — don't reorder here
+    // as nearest-neighbor can cause cross-highway routing
+    const ordered = streetCoords;
 
     setMapProgress(85);
 
-    // Step 4: Use OSRM trip service — finds optimal visit order automatically
-    // This avoids unnecessary detours and loops between streets
-    const osrmPoints = [jrhsCoords, ...ordered.flatMap(s =>
-      s.hasEnd ? [{ lat: s.lat, lng: s.lng }, { lat: s.endLat, lng: s.endLng }]
-               : [{ lat: s.lat, lng: s.lng }]
-    )];
+    // Step 4: Build OSRM waypoints — use both endpoints per street when available
+    const osrmPoints = [jrhsCoords];
+    ordered.forEach(s => {
+      osrmPoints.push({ lat: s.lat, lng: s.lng });
+      if (s.hasEnd) osrmPoints.push({ lat: s.endLat, lng: s.endLng });
+    });
 
+    // Batch into chunks of 90 with 1-point overlap, using route service (preserves order)
     const BATCH = 90;
     let routeGeometry = [];
     try {
@@ -485,21 +475,17 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         const batch  = osrmPoints.slice(i, i + BATCH);
         if (batch.length < 2) break;
         const coords = batch.map(p => `${p.lng},${p.lat}`).join(';');
-        // Use trip service with source=first so JRHS is always the starting point
-        const isFirst = i === 0;
-        const url = isFirst
-          ? `https://router.project-osrm.org/trip/v1/driving/${coords}?overview=full&geometries=polyline&source=first&roundtrip=false`
-          : `https://router.project-osrm.org/trip/v1/driving/${coords}?overview=full&geometries=polyline&source=first&destination=last&roundtrip=false`;
-        const res  = await fetch(url);
-        const data = await res.json();
-        if (data.code === 'Ok' && data.trips?.[0]) {
-          const seg = decodePolyline(data.trips[0].geometry);
+        const url    = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=polyline`;
+        const res    = await fetch(url);
+        const data   = await res.json();
+        if (data.code === 'Ok' && data.routes?.[0]) {
+          const seg = decodePolyline(data.routes[0].geometry);
           routeGeometry = routeGeometry.concat(i === 0 ? seg : seg.slice(1));
         }
         if (i + BATCH - 1 < osrmPoints.length) await new Promise(r => setTimeout(r, 300));
       }
     } catch (e) {
-      console.warn('OSRM trip failed:', e);
+      console.warn('OSRM failed:', e);
     }
 
     setMapProgress(100);
