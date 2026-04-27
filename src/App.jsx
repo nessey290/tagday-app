@@ -436,54 +436,41 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     setMapProgress(78);
 
-    // Step 3: Fetch actual road geometry via Overpass (through Vercel serverless proxy)
-    // Batch all streets in one query to be efficient
     const jrhsLat = jrhsCoords.lat, jrhsLng = jrhsCoords.lng;
+
+    // Step 3: Fetch road geometry one street at a time via serverless proxy
     const streetGeometries = [];
-
-    // Single batch Overpass query for all streets at once
-    try {
-      const conditions = streetCoords
-        .map(s => `way["name"="${s.name.replace(/"/g, '')}"](around:6000,${jrhsLat},${jrhsLng});`)
-        .join('');
-      const query = `[out:json][timeout:30];(${conditions});out body geom;`;
-      console.log('Querying streets:', streetCoords.map(s => s.name));
-
-      const res  = await fetch(`/api/overpass?q=${encodeURIComponent(query)}`);
-      const data = await res.json();
-      console.log('Overpass response:', data.elements?.length, 'elements');
-      console.log('Sample names:', data.elements?.slice(0,5).map(e => e.tags?.name));
-
-      // Group geometry by street name
-      const geomByName = {};
-      (data.elements || []).forEach(el => {
-        const name = el.tags?.name;
-        if (!name || !el.geometry?.length) return;
-        if (!geomByName[name]) geomByName[name] = [];
-        const pts = el.geometry.map(g => [g.lat, g.lon]);
-        if (pts.length >= 2) geomByName[name].push(pts);
-      });
-
-      streetCoords.forEach(s => {
-        const segs = geomByName[s.name];
-        if (segs?.length > 0) {
-          streetGeometries.push({ ...s, segments: segs });
-        } else {
-          // Fallback: straight line between endpoints
-          const fallback = s.hasEnd
-            ? [[s.lat, s.lng], [s.endLat, s.endLng]]
-            : [[s.lat, s.lng]];
-          streetGeometries.push({ ...s, segments: [fallback] });
-        }
-      });
-    } catch (e) {
-      // If proxy fails, fall back to straight lines
-      streetCoords.forEach(s => {
-        const fallback = s.hasEnd
+    for (let i = 0; i < streetCoords.length; i++) {
+      const s = streetCoords[i];
+      const query = `[out:json][timeout:15];way["name"="${s.name.replace(/"/g, '')}"](around:6000,${jrhsLat},${jrhsLng});out body geom;`;
+      let segments = null;
+      try {
+        const res  = await fetch('/api/overpass', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ query }),
+        });
+        const data = await res.json();
+        console.log(`${s.name}: ${data.elements?.length} elements`);
+        const segs = [];
+        (data.elements || []).forEach(el => {
+          if (!el.geometry?.length) return;
+          const pts = el.geometry.map(g => [g.lat, g.lon]);
+          if (pts.length >= 2) segs.push(pts);
+        });
+        if (segs.length > 0) segments = segs;
+      } catch (e) {
+        console.warn(`Failed to fetch ${s.name}:`, e);
+      }
+      // Fallback to straight line
+      if (!segments) {
+        segments = s.hasEnd
           ? [[s.lat, s.lng], [s.endLat, s.endLng]]
           : [[s.lat, s.lng]];
-        streetGeometries.push({ ...s, segments: [fallback] });
-      });
+        segments = [segments];
+      }
+      streetGeometries.push({ ...s, segments });
+      setMapProgress(78 + Math.round(((i + 1) / streetCoords.length) * 20));
     }
 
     setMapProgress(100);
