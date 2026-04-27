@@ -1,5 +1,10 @@
 {
   "rewrites": [
     { "source": "/routes", "destination": "/routes.html" }
-  ]
+  ],
+  "functions": {
+    "api/*.js": {
+      "runtime": "nodejs20.x"
+    }
+  }
 }
