@@ -449,11 +449,10 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       const query = `[out:json][timeout:30];(${conditions});out body geom;`;
       console.log('Querying streets:', streetCoords.map(s => s.name));
 
-      // Use allorigins as CORS proxy for Overpass
-      const res  = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent('https://overpass-api.de/api/interpreter')}`, {
+      const res  = await fetch('/api/overpass', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body:    `data=${encodeURIComponent(query)}`,
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ query }),
       });
       const data = await res.json();
       console.log('Overpass response:', data.elements?.length, 'elements');
