@@ -3,18 +3,11 @@
  
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
  
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  const query = req.method === 'GET'
+    ? req.query?.q
+    : req.body?.query;
  
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
- 
-  const { query } = req.body;
   if (!query) {
     return res.status(400).json({ error: 'Missing query' });
   }
@@ -28,6 +21,15 @@ export default async function handler(req, res) {
  
     if (!response.ok) {
       return res.status(response.status).json({ error: 'Overpass API error' });
+    }
+ 
+    const data = await response.json();
+    return res.status(200).json(data);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
+ 
     }
  
     const data = await response.json();

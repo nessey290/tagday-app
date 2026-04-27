@@ -449,11 +449,7 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       const query = `[out:json][timeout:30];(${conditions});out body geom;`;
       console.log('Querying streets:', streetCoords.map(s => s.name));
 
-      const res  = await fetch('/api/overpass', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ query }),
-      });
+      const res  = await fetch(`/api/overpass?q=${encodeURIComponent(query)}`);
       const data = await res.json();
       console.log('Overpass response:', data.elements?.length, 'elements');
       console.log('Sample names:', data.elements?.slice(0,5).map(e => e.tags?.name));
