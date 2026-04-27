@@ -1,10 +1,23 @@
 // api/overpass.js — Vercel serverless function
+export const config = { api: { bodyParser: true } };
+ 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
  
-  const query = req.query?.q;
+  if (req.method === 'OPTIONS') return res.status(200).end();
+ 
+  let query;
+  if (req.method === 'GET') {
+    query = req.query?.q;
+  } else {
+    // Vercel auto-parses JSON body when Content-Type is application/json
+    query = req.body?.query || req.body?.q;
+  }
+ 
   if (!query) {
-    return res.status(400).json({ error: 'Missing query' });
+    return res.status(400).json({ error: 'Missing query', received: JSON.stringify(req.body) });
   }
  
   try {
@@ -13,10 +26,8 @@ export default async function handler(req, res) {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: `data=${encodeURIComponent(query)}`,
     });
- 
     const text = await response.text();
-    const data = JSON.parse(text);
-    return res.status(200).json(data);
+    return res.status(200).json(JSON.parse(text));
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
