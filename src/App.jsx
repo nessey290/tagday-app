@@ -436,32 +436,55 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     setMapProgress(78);
 
-    // Step 3: For each street, use OSRM match to snap endpoints to actual road geometry
+    // Step 3: Fetch actual road geometry via Overpass (through Vercel serverless proxy)
+    // Batch all streets in one query to be efficient
+    const jrhsLat = jrhsCoords.lat, jrhsLng = jrhsCoords.lng;
     const streetGeometries = [];
-    for (let i = 0; i < streetCoords.length; i++) {
-      const s = streetCoords[i];
-      let geometry = null;
-      try {
-        if (s.hasEnd) {
-          // Match two endpoints to road — returns actual road geometry between them
-          const coords = `${s.lng},${s.lat};${s.endLng},${s.endLat}`;
-          const url = `https://router.project-osrm.org/match/v1/driving/${coords}?overview=full&geometries=geojson&radiuses=50;50`;
-          const res  = await fetch(url);
-          const data = await res.json();
-          if (data.matchings?.[0]?.geometry?.coordinates?.length > 1) {
-            geometry = data.matchings[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]);
-          }
+
+    // Single batch Overpass query for all streets at once
+    try {
+      const conditions = streetCoords
+        .map(s => `way["name"="${s.name.replace(/"/g, '')}"](around:6000,${jrhsLat},${jrhsLng});`)
+        .join('');
+      const query = `[out:json][timeout:30];(${conditions});out body geom;`;
+
+      const res  = await fetch('/api/overpass', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ query }),
+      });
+      const data = await res.json();
+
+      // Group geometry by street name
+      const geomByName = {};
+      (data.elements || []).forEach(el => {
+        const name = el.tags?.name;
+        if (!name || !el.geometry?.length) return;
+        if (!geomByName[name]) geomByName[name] = [];
+        const pts = el.geometry.map(g => [g.lat, g.lon]);
+        if (pts.length >= 2) geomByName[name].push(pts);
+      });
+
+      streetCoords.forEach(s => {
+        const segs = geomByName[s.name];
+        if (segs?.length > 0) {
+          streetGeometries.push({ ...s, segments: segs });
+        } else {
+          // Fallback: straight line between endpoints
+          const fallback = s.hasEnd
+            ? [[s.lat, s.lng], [s.endLat, s.endLng]]
+            : [[s.lat, s.lng]];
+          streetGeometries.push({ ...s, segments: [fallback] });
         }
-      } catch {}
-      // Fallback: straight line if match fails
-      if (!geometry) {
-        geometry = s.hasEnd
+      });
+    } catch (e) {
+      // If proxy fails, fall back to straight lines
+      streetCoords.forEach(s => {
+        const fallback = s.hasEnd
           ? [[s.lat, s.lng], [s.endLat, s.endLng]]
           : [[s.lat, s.lng]];
-      }
-      streetGeometries.push({ ...s, geometry });
-      setMapProgress(78 + Math.round(((i + 1) / streetCoords.length) * 20));
-      await new Promise(r => setTimeout(r, 200));
+        streetGeometries.push({ ...s, segments: [fallback] });
+      });
     }
 
     setMapProgress(100);
@@ -469,7 +492,7 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
     setMapLoading(false);
   };
 
-  // Render Leaflet map — draw each street using road-matched geometry
+  // Render Leaflet map — draw each street using Overpass road geometry
   useEffect(() => {
     if (!showMap || mapLoading || !mapPoints?.streetGeometries) return;
     injectLeaflet().then(() => {
@@ -483,7 +506,10 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         }).addTo(map);
         leafletRef.current = map;
       }
-      map.eachLayer(l => { if (l instanceof window.L.Marker || l instanceof window.L.Polyline || l instanceof window.L.CircleMarker) map.removeLayer(l); });
+      map.eachLayer(l => {
+        if (l instanceof window.L.Marker || l instanceof window.L.Polyline || l instanceof window.L.CircleMarker)
+          map.removeLayer(l);
+      });
 
       const { streetGeometries, jrhsCoords } = mapPoints;
       const bounds = [];
@@ -498,22 +524,21 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         .addTo(map).bindPopup('<b>James River High School</b>');
 
       streetGeometries.forEach((s, i) => {
-        // Draw road-matched geometry as highlighted line
-        if (s.geometry?.length > 1) {
-          window.L.polyline(s.geometry, { color: C.navy, weight: 6, opacity: 0.85 })
-            .addTo(map)
-            .bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>${s.name}</b></div>`);
-          s.geometry.forEach(p => bounds.push(p));
-        } else {
-          window.L.circleMarker([s.lat, s.lng], {
-            radius: 8, fillColor: C.navy, color: 'white', weight: 2, fillOpacity: 0.9,
-          }).addTo(map)
-           .bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>${s.name}</b></div>`);
-          bounds.push([s.lat, s.lng]);
-        }
+        const segs = s.segments || [];
 
-        // Numbered label at midpoint of geometry
-        const mid = s.geometry?.[Math.floor((s.geometry.length - 1) / 2)] || [s.lat, s.lng];
+        // Draw all road segments for this street
+        segs.forEach(seg => {
+          if (seg.length >= 2) {
+            window.L.polyline(seg, { color: C.navy, weight: 6, opacity: 0.85 })
+              .addTo(map)
+              .bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>${s.name}</b></div>`);
+            seg.forEach(p => bounds.push(p));
+          }
+        });
+
+        // Numbered label at midpoint of first segment
+        const firstSeg = segs[0] || [];
+        const mid = firstSeg[Math.floor((firstSeg.length - 1) / 2)] || [s.lat, s.lng];
         const icon = window.L.divIcon({
           className: '',
           html: `<div style="width:26px;height:26px;border-radius:50%;background:${C.gold};border:2px solid white;display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.3)">${i+1}</div>`,
