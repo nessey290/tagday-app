@@ -438,16 +438,18 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     const jrhsLat = jrhsCoords.lat, jrhsLng = jrhsCoords.lng;
 
-    // Step 3: Fetch road geometry directly from Overpass via GET
-    // Overpass supports CORS on GET requests - no proxy needed
+    // Step 3: Fetch road geometry via Vercel serverless proxy
     const streetGeometries = [];
     for (let i = 0; i < streetCoords.length; i++) {
       const s = streetCoords[i];
       const query = `[out:json][timeout:15];way["name"="${s.name.replace(/"/g, '')}"](around:5000,${jrhsLat},${jrhsLng});out geom;`;
       let segments = null;
       try {
-        const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
-        const res  = await fetch(url);
+        const res  = await fetch('/api/overpass', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ query }),
+        });
         const data = await res.json();
         console.log(`${s.name}: ${data.elements?.length} elements`);
         const segs = [];
@@ -468,7 +470,7 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       }
       streetGeometries.push({ ...s, segments });
       setMapProgress(78 + Math.round(((i + 1) / streetCoords.length) * 20));
-      await new Promise(r => setTimeout(r, 1000)); // be polite to Overpass
+      await new Promise(r => setTimeout(r, 500));
     }
 
     setMapProgress(100);
