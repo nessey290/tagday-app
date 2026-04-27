@@ -1,13 +1,8 @@
 // api/overpass.js — Vercel serverless function
-// Proxies Overpass API requests to avoid browser CORS restrictions
- 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
  
-  const query = req.method === 'GET'
-    ? req.query?.q
-    : req.body?.query;
- 
+  const query = req.query?.q;
   if (!query) {
     return res.status(400).json({ error: 'Missing query' });
   }
@@ -19,20 +14,8 @@ export default async function handler(req, res) {
       body: `data=${encodeURIComponent(query)}`,
     });
  
-    if (!response.ok) {
-      return res.status(response.status).json({ error: 'Overpass API error' });
-    }
- 
-    const data = await response.json();
-    return res.status(200).json(data);
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-}
- 
-    }
- 
-    const data = await response.json();
+    const text = await response.text();
+    const data = JSON.parse(text);
     return res.status(200).json(data);
   } catch (err) {
     return res.status(500).json({ error: err.message });
