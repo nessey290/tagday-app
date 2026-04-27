@@ -434,15 +434,44 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       return;
     }
 
+    setMapProgress(78);
+
+    // Step 3: For each street, use OSRM match to snap endpoints to actual road geometry
+    const streetGeometries = [];
+    for (let i = 0; i < streetCoords.length; i++) {
+      const s = streetCoords[i];
+      let geometry = null;
+      try {
+        if (s.hasEnd) {
+          // Match two endpoints to road — returns actual road geometry between them
+          const coords = `${s.lng},${s.lat};${s.endLng},${s.endLat}`;
+          const url = `https://router.project-osrm.org/match/v1/driving/${coords}?overview=full&geometries=geojson&radiuses=50;50`;
+          const res  = await fetch(url);
+          const data = await res.json();
+          if (data.matchings?.[0]?.geometry?.coordinates?.length > 1) {
+            geometry = data.matchings[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+          }
+        }
+      } catch {}
+      // Fallback: straight line if match fails
+      if (!geometry) {
+        geometry = s.hasEnd
+          ? [[s.lat, s.lng], [s.endLat, s.endLng]]
+          : [[s.lat, s.lng]];
+      }
+      streetGeometries.push({ ...s, geometry });
+      setMapProgress(78 + Math.round(((i + 1) / streetCoords.length) * 20));
+      await new Promise(r => setTimeout(r, 200));
+    }
+
     setMapProgress(100);
-    // No routing needed — just highlight the streets directly
-    setMapPoints({ streetCoords, jrhsCoords });
+    setMapPoints({ streetGeometries, jrhsCoords });
     setMapLoading(false);
   };
 
-  // Render Leaflet map — highlight streets as colored lines, no routing
+  // Render Leaflet map — draw each street using road-matched geometry
   useEffect(() => {
-    if (!showMap || mapLoading || !mapPoints?.streetCoords) return;
+    if (!showMap || mapLoading || !mapPoints?.streetGeometries) return;
     injectLeaflet().then(() => {
       const container = document.getElementById('driver-route-map');
       if (!container) return;
@@ -456,7 +485,7 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       }
       map.eachLayer(l => { if (l instanceof window.L.Marker || l instanceof window.L.Polyline || l instanceof window.L.CircleMarker) map.removeLayer(l); });
 
-      const { streetCoords, jrhsCoords } = mapPoints;
+      const { streetGeometries, jrhsCoords } = mapPoints;
       const bounds = [];
 
       // JRHS school marker
@@ -468,18 +497,13 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       window.L.marker([jrhsCoords.lat, jrhsCoords.lng], { icon: schoolIcon })
         .addTo(map).bindPopup('<b>James River High School</b>');
 
-      // Draw each street as a highlighted line + numbered pin
-      streetCoords.forEach((s, i) => {
-        const color = C.gold;
-
-        // Draw street as a line if we have both endpoints, otherwise a circle marker
-        if (s.hasEnd) {
-          window.L.polyline(
-            [[s.lat, s.lng], [s.endLat, s.endLng]],
-            { color: C.navy, weight: 6, opacity: 0.85 }
-          ).addTo(map)
-           .bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>${s.name}</b></div>`);
-          bounds.push([s.lat, s.lng], [s.endLat, s.endLng]);
+      streetGeometries.forEach((s, i) => {
+        // Draw road-matched geometry as highlighted line
+        if (s.geometry?.length > 1) {
+          window.L.polyline(s.geometry, { color: C.navy, weight: 6, opacity: 0.85 })
+            .addTo(map)
+            .bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>${s.name}</b></div>`);
+          s.geometry.forEach(p => bounds.push(p));
         } else {
           window.L.circleMarker([s.lat, s.lng], {
             radius: 8, fillColor: C.navy, color: 'white', weight: 2, fillOpacity: 0.9,
@@ -488,15 +512,14 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
           bounds.push([s.lat, s.lng]);
         }
 
-        // Numbered label pin at midpoint
-        const midLat = s.hasEnd ? (s.lat + s.endLat) / 2 : s.lat;
-        const midLng = s.hasEnd ? (s.lng + s.endLng) / 2 : s.lng;
+        // Numbered label at midpoint of geometry
+        const mid = s.geometry?.[Math.floor((s.geometry.length - 1) / 2)] || [s.lat, s.lng];
         const icon = window.L.divIcon({
           className: '',
-          html: `<div style="width:26px;height:26px;border-radius:50%;background:${color};border:2px solid white;display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.3)">${i+1}</div>`,
+          html: `<div style="width:26px;height:26px;border-radius:50%;background:${C.gold};border:2px solid white;display:flex;align-items:center;justify-content:center;color:white;font-size:11px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.3)">${i+1}</div>`,
           iconSize: [26,26], iconAnchor: [13,13],
         });
-        window.L.marker([midLat, midLng], { icon }).addTo(map)
+        window.L.marker(mid, { icon }).addTo(map)
           .bindPopup(`<div style="font-family:sans-serif;font-size:13px"><b>${i+1}. ${s.name}</b></div>`);
       });
 
