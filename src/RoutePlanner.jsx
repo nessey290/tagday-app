@@ -289,6 +289,11 @@ function StepImport({ onComplete }) {
           // Skip addresses with no house number (non-residential/institutional)
           if (!p.HouseNumber) continue;
 
+          // Only include residential zoning — exclude commercial, special use, etc.
+          const zone = (p.Zoning || '').toUpperCase();
+          const RESIDENTIAL_ZONES = new Set(['SC', 'SR', 'TR', 'AR', 'R', 'MH', 'A']);
+          if (!RESIDENTIAL_ZONES.has(zone)) continue;
+
           const prefix = (p.StreetNamePrefix  || '').trim();
           const name   = (p.StreetName         || '').trim();
           const type   = (p.StreetType         || '').trim();
@@ -356,7 +361,8 @@ function StepImport({ onComplete }) {
           return;
         }
 
-        // Assign unnamed streets to nearest named subdivision
+        // Remove streets with fewer than 3 houses — not worth routing
+        streets = streets.filter(s => s.houses >= 3);
         // This keeps streets like Rivermist Road grouped with River Downs neighbors
         const namedStreets   = streets.filter(s => s.subdivision);
         const unnamedStreets = streets.filter(s => !s.subdivision);
