@@ -22,7 +22,7 @@ function injectFonts() {
 injectFonts();
 
 /* ── CONSTANTS ── */
-const JRHS       = { lat: 37.5185, lng: -77.6255 }; // James River High School
+const JRHS       = { lat: 37.5530, lng: -77.6500 }; // James River High School — 3700 James River Road
 const SHIFT_MINS = 150;  // 2.5 hour target per route (allows time for breaks)
 const STUDENTS   = 4;    // students per car (2 pairs)
 const TRAVEL_MINS = 5;   // travel + parking per street

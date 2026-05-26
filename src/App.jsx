@@ -361,7 +361,7 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
     const BBOX = 'bbox=-77.696,37.477,-77.514,37.563';
 
     // Step 1: Geocode JRHS
-    let jrhsCoords = { lat: 37.5185, lng: -77.6255 };
+    let jrhsCoords = { lat: 37.5530, lng: -77.6500 };
     try {
       const res  = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent('James River High School Midlothian VA')}&limit=1&${BBOX}`);
       const data = await res.json();
