@@ -17,7 +17,7 @@ export default function handler(req, res) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
-      'Content-Length': Buffer.byteLength(postData),
+      // No Content-Length — let Node calculate it automatically
     },
   };
 
