@@ -531,10 +531,36 @@ function StepGenerate({ streets, onGenerated, onBack }) {
   );
 }
 
+// Distinct colors for up to 20 routes
+const ROUTE_COLORS = [
+  '#1E8A3C','#9B2CB5','#C47D00','#1A5EBB','#C0392B',
+  '#16A085','#8E44AD','#D35400','#2471A3','#1E8449',
+  '#CB4335','#117A65','#7D6608','#784212','#1A5276',
+  '#6E2F8C','#196F3D','#9C640C','#1F618D','#922B21',
+];
+
+function injectLeafletRP() {
+  return new Promise(resolve => {
+    if (window.L) { resolve(); return; }
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    document.head.appendChild(link);
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    script.onload = resolve;
+    document.head.appendChild(script);
+  });
+}
+
 function StepReview({ routes, setRoutes, onNext, onBack }) {
-  const [expanded,  setExpanded]  = useState({});
-  const [showCSV,   setShowCSV]   = useState(false);
-  const [csvCopied, setCsvCopied] = useState(false);
+  const [expanded,       setExpanded]       = useState({});
+  const [showCSV,        setShowCSV]        = useState(false);
+  const [csvCopied,      setCsvCopied]      = useState(false);
+  const [selectedStreet, setSelectedStreet] = useState(null); // { streetId, routeId }
+  const mapRef     = useRef(null);
+  const markersRef = useRef({});
+
   const toggle = (id) => setExpanded(p => ({ ...p, [id]: !p[id] }));
 
   const routeDisplayName = (r) =>
@@ -548,46 +574,101 @@ function StepReview({ routes, setRoutes, onNext, onBack }) {
     for (const route of routes) {
       const displayName = `Route ${route.number} — ${route.subdivisions.slice(0,3).join(' · ')}${route.subdivisions.length > 3 ? '…' : ''}`;
       for (const street of route.streets) {
-        rows.push([
-          route.number,
-          displayName,
-          street.subdivision || '',
-          street.name,
-          street.houses,
-          DENSITY[street.density]?.label || street.density,
-          fmtTime(street.mins),
-        ]);
+        rows.push([route.number, displayName, street.subdivision || '', street.name, street.houses, DENSITY[street.density]?.label || street.density, fmtTime(street.mins)]);
       }
     }
     return rows.map(r => r.join(',')).join('\n');
   };
 
-  const csvText = showCSV ? buildCSV() : '';
-
   const copyCSV = () => {
     navigator.clipboard.writeText(buildCSV()).then(() => {
-      setCsvCopied(true);
-      setTimeout(() => setCsvCopied(false), 2000);
+      setCsvCopied(true); setTimeout(() => setCsvCopied(false), 2000);
     });
   };
 
   const moveStreet = (streetId, fromRouteId, toRouteId) => {
+    setSelectedStreet(null);
     setRoutes(prev => {
       const next = prev.map(r => ({ ...r, streets: [...r.streets] }));
       const fromRoute = next.find(r => r.id === fromRouteId);
       const toRoute   = next.find(r => r.id === toRouteId);
       const street    = fromRoute.streets.find(s => s.id === streetId);
-      fromRoute.streets   = fromRoute.streets.filter(s => s.id !== streetId);
-      fromRoute.totalMins = fromRoute.streets.reduce((s, x) => s + x.mins, 0);
+      fromRoute.streets     = fromRoute.streets.filter(s => s.id !== streetId);
+      fromRoute.totalMins   = fromRoute.streets.reduce((s, x) => s + x.mins, 0);
       fromRoute.totalHouses = fromRoute.streets.reduce((s, x) => s + x.houses, 0);
       fromRoute.subdivisions = [...new Set(fromRoute.streets.map(s => s.subdivision).filter(Boolean))];
       toRoute.streets.push(street);
-      toRoute.totalMins = toRoute.streets.reduce((s, x) => s + x.mins, 0);
+      toRoute.totalMins   = toRoute.streets.reduce((s, x) => s + x.mins, 0);
       toRoute.totalHouses = toRoute.streets.reduce((s, x) => s + x.houses, 0);
       toRoute.subdivisions = [...new Set(toRoute.streets.map(s => s.subdivision).filter(Boolean))];
       return next.filter(r => r.streets.length > 0);
     });
   };
+
+  // Initialize and update review map
+  useEffect(() => {
+    injectLeafletRP().then(() => {
+      const container = document.getElementById('review-map');
+      if (!container) return;
+
+      if (!mapRef.current) {
+        mapRef.current = window.L.map('review-map').setView([37.553, -77.625], 13);
+        window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap', maxZoom: 19,
+        }).addTo(mapRef.current);
+      }
+
+      // Clear existing markers
+      Object.values(markersRef.current).forEach(m => m.remove());
+      markersRef.current = {};
+
+      // Draw all streets as colored circle markers
+      routes.forEach((route, ri) => {
+        const color = ROUTE_COLORS[ri % ROUTE_COLORS.length];
+        route.streets.forEach(street => {
+          if (!street.lat || !street.lng) return;
+          const isSelected = selectedStreet?.streetId === street.id;
+          const marker = window.L.circleMarker([street.lat, street.lng], {
+            radius:      isSelected ? 12 : 7,
+            fillColor:   isSelected ? '#FFD700' : color,
+            color:       isSelected ? '#333' : 'white',
+            weight:      isSelected ? 2.5 : 1.5,
+            fillOpacity: isSelected ? 1 : 0.85,
+          }).addTo(mapRef.current)
+            .bindPopup(`<div style="font-family:sans-serif;font-size:12px"><b>Route ${route.number}</b><br>${street.name}<br>${street.houses} houses · ${fmtTime(street.mins)}</div>`);
+          markersRef.current[street.id] = marker;
+        });
+      });
+
+      // Add route number legend markers at route centroids
+      routes.forEach((route, ri) => {
+        const color = ROUTE_COLORS[ri % ROUTE_COLORS.length];
+        const lats = route.streets.map(s => s.lat).filter(Boolean);
+        const lngs = route.streets.map(s => s.lng).filter(Boolean);
+        if (!lats.length) return;
+        const clat = lats.reduce((a, b) => a + b, 0) / lats.length;
+        const clng = lngs.reduce((a, b) => a + b, 0) / lngs.length;
+        const icon = window.L.divIcon({
+          className: '',
+          html: `<div style="width:22px;height:22px;border-radius:50%;background:${color};border:2px solid white;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;font-weight:700;box-shadow:0 2px 4px rgba(0,0,0,0.4)">${route.number}</div>`,
+          iconSize: [22, 22], iconAnchor: [11, 11],
+        });
+        window.L.marker([clat, clng], { icon, zIndexOffset: 1000 }).addTo(mapRef.current)
+          .bindPopup(`<b>Route ${route.number}</b><br>${route.totalHouses} houses · ${fmtTime(route.totalMins)}`);
+      });
+    });
+  }, [routes, selectedStreet]);
+
+  // Pan to selected street
+  useEffect(() => {
+    if (!selectedStreet || !mapRef.current) return;
+    const route = routes.find(r => r.id === selectedStreet.routeId);
+    const street = route?.streets.find(s => s.id === selectedStreet.streetId);
+    if (street?.lat && street?.lng) {
+      mapRef.current.setView([street.lat, street.lng], 15, { animate: true });
+      markersRef.current[street.id]?.openPopup();
+    }
+  }, [selectedStreet]);
 
   return (
     <div>
@@ -595,91 +676,106 @@ function StepReview({ routes, setRoutes, onNext, onBack }) {
       <div style={{ fontSize: 14, color: C.muted, marginBottom: 4 }}>
         {routes.length} routes · {totalHouses.toLocaleString()} addresses · {fmtTime(totalMins)} total work · sorted nearest → furthest from JRHS
       </div>
-      <div style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>
-        Routes numbered 1 (closest to school) to {routes.length} (furthest). Click a name to rename. This is your permanent master list.
+      <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>
+        Click any street in the list to highlight it on the map. Use Move→ to reassign streets between routes.
       </div>
 
-      <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
-        <button onClick={() => setShowCSV(v => !v)} style={{
-          padding: '9px 18px', borderRadius: 8, border: `1.5px solid ${C.green}`,
-          background: C.white, color: C.green, fontFamily: font, fontWeight: 600, fontSize: 13, cursor: 'pointer',
-        }}>{showCSV ? '▲ Hide CSV Data' : '▼ Show CSV for Validation'}</button>
-        {showCSV && (
-          <button onClick={copyCSV} style={{
-            padding: '9px 18px', borderRadius: 8, border: `1.5px solid ${C.purple}`,
-            background: C.white, color: C.purple, fontFamily: font, fontWeight: 600, fontSize: 13, cursor: 'pointer',
-          }}>{csvCopied ? '✓ Copied!' : '📋 Copy to Clipboard'}</button>
-        )}
-      </div>
+      {/* Side-by-side layout */}
+      <div style={{ display: 'flex', gap: 16, marginBottom: 16, alignItems: 'flex-start' }}>
 
-      {showCSV && (
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>
-            Copy this and paste into Excel or Google Sheets. Use Ctrl+A to select all first.
+        {/* Left: route list */}
+        <div style={{ flex: '0 0 420px', display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '70vh', overflowY: 'auto' }}>
+
+          <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+            <button onClick={() => setShowCSV(v => !v)} style={{
+              padding: '7px 14px', borderRadius: 8, border: `1.5px solid ${C.green}`,
+              background: C.white, color: C.green, fontFamily: font, fontWeight: 600, fontSize: 12, cursor: 'pointer',
+            }}>{showCSV ? '▲ Hide CSV' : '▼ CSV Export'}</button>
+            {showCSV && (
+              <button onClick={copyCSV} style={{
+                padding: '7px 14px', borderRadius: 8, border: `1.5px solid ${C.purple}`,
+                background: C.white, color: C.purple, fontFamily: font, fontWeight: 600, fontSize: 12, cursor: 'pointer',
+              }}>{csvCopied ? '✓ Copied!' : '📋 Copy'}</button>
+            )}
           </div>
-          <textarea
-            readOnly
-            value={csvText}
-            onClick={e => e.target.select()}
-            style={{
-              width: '100%', height: 200, padding: '10px 12px', borderRadius: 8,
-              border: `1.5px solid ${C.border}`, fontSize: 11, fontFamily: 'monospace',
-              color: C.text, background: C.bg, boxSizing: 'border-box', resize: 'vertical',
-            }}
-          />
-        </div>
-      )}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 520, overflowY: 'auto', marginBottom: 16 }}>
-        {routes.map((route) => {
-          const pct = Math.min(100, Math.round((route.totalMins / SHIFT_MINS) * 100));
-          const isExp = expanded[route.id];
-          return (
-            <Card key={route.id} style={{ padding: '12px 16px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                <div style={{
-                  width: 32, height: 32, borderRadius: 8, flexShrink: 0,
-                  background: C.green, color: C.white, display: 'flex', alignItems: 'center',
-                  justifyContent: 'center', fontFamily: fontHead, fontSize: 16, fontWeight: 700,
-                }}>{route.number}</div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontFamily: font, fontSize: 15, fontWeight: 700, color: C.text }}>
+          {showCSV && (
+            <textarea readOnly value={buildCSV()} onClick={e => e.target.select()} style={{
+              width: '100%', height: 140, padding: '8px 10px', borderRadius: 8,
+              border: `1.5px solid ${C.border}`, fontSize: 10, fontFamily: 'monospace',
+              color: C.text, background: C.bg, boxSizing: 'border-box', resize: 'vertical', marginBottom: 4,
+            }} />
+          )}
+
+          {routes.map((route, ri) => {
+            const pct   = Math.min(100, Math.round((route.totalMins / SHIFT_MINS) * 100));
+            const isExp = expanded[route.id];
+            const color = ROUTE_COLORS[ri % ROUTE_COLORS.length];
+            return (
+              <Card key={route.id} style={{ padding: '10px 14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <div style={{
+                    width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+                    background: color, color: 'white', display: 'flex', alignItems: 'center',
+                    justifyContent: 'center', fontFamily: fontHead, fontSize: 14, fontWeight: 700,
+                  }}>{route.number}</div>
+                  <div style={{ flex: 1, fontFamily: font, fontSize: 13, fontWeight: 700, color: C.text }}>
                     {routeDisplayName(route)}
                   </div>
+                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: pct > 100 ? C.red : C.text }}>{fmtTime(route.totalMins)}</div>
+                    <div style={{ fontSize: 10, color: C.muted }}>{route.totalHouses} 🏠</div>
+                  </div>
                 </div>
-                <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: pct > 100 ? C.red : C.text }}>{fmtTime(route.totalMins)}</div>
-                  <div style={{ fontSize: 11, color: C.muted }}>{route.totalHouses} 🏠</div>
+                <div style={{ background: C.bg, borderRadius: 4, height: 4, marginBottom: 6, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', borderRadius: 4, width: `${pct}%`, background: pct > 100 ? C.red : color }} />
                 </div>
-              </div>
-              <div style={{ background: C.bg, borderRadius: 4, height: 5, marginBottom: 8, overflow: 'hidden' }}>
-                <div style={{ height: '100%', borderRadius: 4, width: `${pct}%`, background: pct > 100 ? C.red : C.green, transition: 'width 0.3s' }} />
-              </div>
-              <button onClick={() => toggle(route.id)} style={{ background: 'none', border: 'none', fontSize: 12, color: C.muted, cursor: 'pointer', padding: 0, fontFamily: font }}>
-                {isExp ? '▲ Hide streets' : `▼ Show ${route.streets.length} streets`}
-              </button>
-              {isExp && (
-                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3 }}>
-                  {route.streets.map(s => (
-                    <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 10px', background: C.bg, borderRadius: 6, fontSize: 12, borderLeft: `3px solid ${DENSITY[s.density].color}` }}>
-                      <span style={{ fontWeight: 600, color: C.text, flex: 1 }}>{s.name}</span>
-                      <span style={{ color: C.muted, flexShrink: 0 }}>{s.houses}🏠 · {fmtTime(s.mins)}</span>
-                      <select
-                        defaultValue=""
-                        onChange={e => { if (e.target.value) { moveStreet(s.id, route.id, e.target.value); e.target.value = ''; } }}
-                        style={{ fontSize: 10, padding: '2px 4px', borderRadius: 5, border: `1px solid ${C.border}`, fontFamily: font, color: C.muted, background: C.white, cursor: 'pointer', maxWidth: 90 }}>
-                        <option value="">Move→</option>
-                        {routes.filter(r => r.id !== route.id).map(r => (
-                          <option key={r.id} value={r.id}>{r.name}</option>
-                        ))}
-                      </select>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Card>
-          );
-        })}
+                <button onClick={() => toggle(route.id)} style={{ background: 'none', border: 'none', fontSize: 11, color: C.muted, cursor: 'pointer', padding: 0, fontFamily: font }}>
+                  {isExp ? '▲ Hide streets' : `▼ Show ${route.streets.length} streets`}
+                </button>
+                {isExp && (
+                  <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    {route.streets.map(s => {
+                      const isSel = selectedStreet?.streetId === s.id;
+                      return (
+                        <div
+                          key={s.id}
+                          onClick={() => setSelectedStreet(isSel ? null : { streetId: s.id, routeId: route.id })}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px',
+                            background: isSel ? '#FFF9E6' : C.bg, borderRadius: 6, fontSize: 11,
+                            borderLeft: `3px solid ${isSel ? '#FFD700' : color}`,
+                            cursor: 'pointer', transition: 'background 0.15s',
+                          }}>
+                          <span style={{ fontWeight: 600, color: C.text, flex: 1 }}>{s.name}</span>
+                          <span style={{ color: C.muted, flexShrink: 0 }}>{s.houses}🏠 · {fmtTime(s.mins)}</span>
+                          <select
+                            defaultValue=""
+                            onClick={e => e.stopPropagation()}
+                            onChange={e => { if (e.target.value) { moveStreet(s.id, route.id, e.target.value); e.target.value = ''; } }}
+                            style={{ fontSize: 10, padding: '2px 4px', borderRadius: 5, border: `1px solid ${C.border}`, fontFamily: font, color: C.muted, background: C.white, cursor: 'pointer', maxWidth: 80 }}>
+                            <option value="">Move→</option>
+                            {routes.filter(r => r.id !== route.id).map(r => (
+                              <option key={r.id} value={r.id}>Route {r.number}</option>
+                            ))}
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </Card>
+            );
+          })}
+        </div>
+
+        {/* Right: persistent map */}
+        <div style={{ flex: 1, position: 'sticky', top: 0 }}>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>
+            Each color = one route. Click a street name to highlight it. 🟡 = selected street.
+          </div>
+          <div id="review-map" style={{ height: '70vh', borderRadius: 12, border: `1.5px solid ${C.border}`, overflow: 'hidden' }} />
+        </div>
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
