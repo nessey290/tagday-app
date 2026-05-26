@@ -360,16 +360,8 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
     // James River HS district bounding box — derived from official boundary file
     const BBOX = 'bbox=-77.696,37.477,-77.514,37.563';
 
-    // Step 1: Geocode JRHS
+    // Use known JRHS coordinates directly — skip Photon to avoid snapping to park
     let jrhsCoords = { lat: 37.5530, lng: -77.6500 };
-    try {
-      const res  = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent('James River High School Midlothian VA')}&limit=1&${BBOX}`);
-      const data = await res.json();
-      if (data?.features?.[0]) {
-        const [lng, lat] = data.features[0].geometry.coordinates;
-        jrhsCoords = { lat, lng };
-      }
-    } catch {}
     try {
       const res  = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent('James River High School Midlothian VA')}&limit=1&${BBOX}`);
       const data = await res.json();

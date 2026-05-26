@@ -405,7 +405,18 @@ function StepImport({ onComplete }) {
           return;
         }
 
-        // Fetch driving distances from JRHS via OSRM
+        // Assign unnamed streets to nearest named subdivision
+        // This keeps streets like Rivermist Road grouped with River Downs neighbors
+        const namedStreets   = streets.filter(s => s.subdivision);
+        const unnamedStreets = streets.filter(s => !s.subdivision);
+        for (const s of unnamedStreets) {
+          let bestDist = Infinity, bestSub = '';
+          for (const ns of namedStreets) {
+            const d = Math.hypot(s.lat - ns.lat, s.lng - ns.lng);
+            if (d < bestDist) { bestDist = d; bestSub = ns.subdivision; }
+          }
+          if (bestSub) s.subdivision = bestSub;
+        }
         setPhase(`Getting driving distances from JRHS for ${streets.length} streets…`);
         setProgress(0);
         streets = await fetchDrivingDists(streets, (pct) => {
