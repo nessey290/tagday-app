@@ -128,17 +128,23 @@ function buildMasterRoutes(streets, minsPerHouse) {
       totalMins: seed.mins,
       centLat:   seed.lat,
       centLng:   seed.lng,
+      seedLat:   seed.lat,  // fixed seed location — used as primary reference
+      seedLng:   seed.lng,
     };
 
     let keepAdding = true;
     while (keepAdding && unassigned.length > 0) {
       keepAdding = false;
-      let bestIdx = -1, bestDist = Infinity;
+      let bestIdx = -1, bestScore = Infinity;
       for (let i = 0; i < unassigned.length; i++) {
         const s = unassigned[i];
         if (route.totalMins + s.mins > SHIFT_MINS) continue;
-        const d = dist({ lat: route.centLat, lng: route.centLng }, s);
-        if (d < bestDist) { bestDist = d; bestIdx = i; }
+        // Score = weighted combo of distance from seed (70%) and centroid (30%)
+        // This keeps the route tight around its origin while still expanding sensibly
+        const dSeed = dist({ lat: route.seedLat, lng: route.seedLng }, s);
+        const dCent = dist({ lat: route.centLat, lng: route.centLng }, s);
+        const score = dSeed * 0.7 + dCent * 0.3;
+        if (score < bestScore) { bestScore = score; bestIdx = i; }
       }
       if (bestIdx !== -1) {
         const s = unassigned.splice(bestIdx, 1)[0];
