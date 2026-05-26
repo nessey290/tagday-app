@@ -558,6 +558,15 @@ function StepReview({ routes, setRoutes, onNext, onBack }) {
   const [showCSV,        setShowCSV]        = useState(false);
   const [csvCopied,      setCsvCopied]      = useState(false);
   const [selectedStreet, setSelectedStreet] = useState(null); // { streetId, routeId }
+  const [mapFullscreen, setMapFullscreen] = useState(false);
+
+  // Handle Escape key to exit fullscreen
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') setMapFullscreen(false); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
   const mapRef     = useRef(null);
   const markersRef = useRef({});
 
@@ -659,6 +668,10 @@ function StepReview({ routes, setRoutes, onNext, onBack }) {
     });
   }, [routes, selectedStreet]);
 
+  // Invalidate map size when fullscreen toggles so Leaflet redraws
+  useEffect(() => {
+    setTimeout(() => mapRef.current?.invalidateSize(), 150);
+  }, [mapFullscreen]);
   // Pan to selected street
   useEffect(() => {
     if (!selectedStreet || !mapRef.current) return;
@@ -684,7 +697,7 @@ function StepReview({ routes, setRoutes, onNext, onBack }) {
       <div style={{ display: 'flex', gap: 16, marginBottom: 16, alignItems: 'flex-start' }}>
 
         {/* Left: route list */}
-        <div style={{ flex: '0 0 420px', display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '70vh', overflowY: 'auto' }}>
+        <div style={{ flex: '0 0 500px', display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '80vh', overflowY: 'auto' }}>
 
           <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
             <button onClick={() => setShowCSV(v => !v)} style={{
@@ -769,12 +782,22 @@ function StepReview({ routes, setRoutes, onNext, onBack }) {
           })}
         </div>
 
-        {/* Right: persistent map */}
-        <div style={{ flex: 1, position: 'sticky', top: 0 }}>
-          <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>
-            Each color = one route. Click a street name to highlight it. 🟡 = selected street.
+        {/* Right: persistent map — normal or fullscreen overlay */}
+        <div style={mapFullscreen ? {
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          zIndex: 9999, background: 'white', display: 'flex', flexDirection: 'column', padding: 12,
+        } : { flex: 1, position: 'sticky', top: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <div style={{ fontSize: 12, color: C.muted }}>
+              Each color = one route. Click a street name to highlight it. 🟡 = selected street.
+            </div>
+            <button
+              onClick={() => { setMapFullscreen(v => !v); setTimeout(() => mapRef.current?.invalidateSize(), 100); }}
+              style={{ padding: '4px 10px', borderRadius: 6, border: `1.5px solid ${C.border}`, background: C.white, color: C.text, fontFamily: font, fontSize: 12, cursor: 'pointer', flexShrink: 0 }}>
+              {mapFullscreen ? '✕ Exit Fullscreen' : '⛶ Fullscreen'}
+            </button>
           </div>
-          <div id="review-map" style={{ height: '70vh', borderRadius: 12, border: `1.5px solid ${C.border}`, overflow: 'hidden' }} />
+          <div id="review-map" style={{ flex: 1, height: mapFullscreen ? undefined : '80vh', borderRadius: 12, border: `1.5px solid ${C.border}`, overflow: 'hidden' }} />
         </div>
       </div>
 
@@ -944,11 +967,12 @@ export default function App() {
   return (
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: font }}>
       <div style={{ background: C.green, padding: '16px 24px', display: 'flex', alignItems: 'center', gap: 12 }}>
-        <div style={{ fontFamily: fontHead, fontSize: 24, fontWeight: 700, color: C.white, letterSpacing: 2 }}>🎺 TAG DAY ROUTE PLANNER</div>
-        <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.65)' }}>James River Regiment</div>
+        <div style={{ fontFamily: fontHead, fontSize: 22, fontWeight: 700, color: C.white, letterSpacing: 2 }}>🎺 TAG DAY ROUTE PLANNER</div>
+        <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.65)' }}>James River Regiment</div>
       </div>
 
-      <div style={{ maxWidth: 680, margin: '0 auto', padding: '28px 20px' }}>
+      {/* Full-width on review step, constrained on others */}
+      <div style={{ maxWidth: step === 2 ? 1400 : 860, margin: '0 auto', padding: '28px 24px' }}>
         <StepBar step={step} total={STEPS.length} />
         <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 20 }}>
           Step {step + 1} of {STEPS.length} — {STEPS[step]}
