@@ -362,8 +362,8 @@ function StepImport({ onComplete }) {
           return;
         }
 
-        // Remove streets with fewer than 3 houses — not worth routing
-        streets = streets.filter(s => s.houses >= 3);
+        // Remove streets with fewer than 2 houses — single addresses aren't worth routing
+        streets = streets.filter(s => s.houses >= 2);
         // This keeps streets like Rivermist Road grouped with River Downs neighbors
         const namedStreets   = streets.filter(s => s.subdivision);
         const unnamedStreets = streets.filter(s => !s.subdivision);
