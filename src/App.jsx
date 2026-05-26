@@ -441,7 +441,11 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
       const endFilter = s.hasEnd
         ? `(around:300,${s.lat},${s.lng})(around:300,${s.endLat},${s.endLng})`
         : `(around:300,${s.lat},${s.lng})`;
-      const query = `[out:json][timeout:15][bbox:37.477,-77.696,37.563,-77.514];(way["name"="${s.name.replace(/"/g, '')}"](around:300,${s.lat},${s.lng});way["name"="${s.name.replace(/"/g, '')}"]${s.hasEnd ? `(around:300,${s.endLat},${s.endLng})` : `(around:300,${s.lat},${s.lng})`};);out geom;`;
+      const sName = s.name.replace(/"/g, '');
+      // Search for exact name AND common suffix variants (some streets lack StreetType in address data)
+      const nameVariants = [sName, `${sName} Road`, `${sName} Drive`, `${sName} Lane`, `${sName} Way`];
+      const nameFilter = nameVariants.map(n => `way["name"="${n}"](around:300,${s.lat},${s.lng});${s.hasEnd ? `way["name"="${n}"](around:300,${s.endLat},${s.endLng});` : ''}`).join('');
+      const query = `[out:json][timeout:15][bbox:37.477,-77.696,37.563,-77.514];(${nameFilter});out geom;`;
       let segments = null;
       try {
         const res  = await fetch('/api/overpass', {
