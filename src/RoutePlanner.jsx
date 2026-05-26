@@ -123,13 +123,20 @@ function buildMasterRoutes(streets, minsPerHouse) {
 
   while (unassigned.length > 0) {
     const seed = unassigned.shift();
+
+    // Effective time budget = shift duration minus round-trip drive to seed
+    // (drive to first street + drive back at end)
+    const driveToSeed = seed.drivingMinsFromJRHS ?? dist(seed, JRHS) * 1000;
+    const effectiveBudget = Math.max(30, SHIFT_MINS - (driveToSeed * 2));
+
     const route = {
       streets:   [seed],
       totalMins: seed.mins,
       centLat:   seed.lat,
       centLng:   seed.lng,
-      seedLat:   seed.lat,  // fixed seed location — used as primary reference
+      seedLat:   seed.lat,
       seedLng:   seed.lng,
+      budget:    effectiveBudget,
     };
 
     let keepAdding = true;
@@ -138,17 +145,13 @@ function buildMasterRoutes(streets, minsPerHouse) {
       let bestIdx = -1, bestScore = Infinity;
       for (let i = 0; i < unassigned.length; i++) {
         const s = unassigned[i];
-        if (route.totalMins + s.mins > SHIFT_MINS) continue;
-        // Score by distance to the nearest street already on this route.
-        // This creates a natural "expanding blob" — adjacent streets always score best,
-        // and streets requiring a detour score poorly regardless of seed position.
+        if (route.totalMins + s.mins > route.budget) continue;
         let minDistToRoute = Infinity;
         for (const rs of route.streets) {
           const d = dist(rs, s);
           if (d < minDistToRoute) minDistToRoute = d;
         }
-        const score = minDistToRoute;
-        if (score < bestScore) { bestScore = score; bestIdx = i; }
+        if (minDistToRoute < bestScore) { bestScore = minDistToRoute; bestIdx = i; }
       }
       if (bestIdx !== -1) {
         const s = unassigned.splice(bestIdx, 1)[0];
@@ -174,6 +177,7 @@ function buildMasterRoutes(streets, minsPerHouse) {
       totalMins:    r.totalMins,
       totalHouses:  r.streets.reduce((s, x) => s + x.houses, 0),
       distFromJRHS: dist({ lat: r.centLat, lng: r.centLng }, JRHS),
+      effectiveBudget: r.budget ?? SHIFT_MINS,
     };
   });
 }
@@ -721,7 +725,7 @@ function StepReview({ routes, setRoutes, onNext, onBack }) {
           )}
 
           {routes.map((route, ri) => {
-            const pct   = Math.min(100, Math.round((route.totalMins / SHIFT_MINS) * 100));
+            const pct   = Math.min(100, Math.round((route.totalMins / (route.effectiveBudget ?? SHIFT_MINS)) * 100));
             const isExp = expanded[route.id];
             const color = ROUTE_COLORS[ri % ROUTE_COLORS.length];
             return (
