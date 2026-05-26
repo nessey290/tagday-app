@@ -100,10 +100,10 @@ function streetMins(houses, density, minsPerHouse) {
 
 /* ══════════════════════════════════════════════════
    MASTER ROUTE GENERATION
-   1. Parse addresses → group by subdivision → compute street centroids
-   2. Sort subdivisions by distance from JRHS
-   3. Greedy geographic clustering into 3-hour routes
-   4. Sort routes by distance from JRHS (Route 1 = nearest)
+   Pure geographic greedy clustering at street level:
+   - Sort streets by driving distance from JRHS
+   - Route 1 seeds from closest street, keeps adding nearest unassigned street
+   - Guarantees contiguity and correct route numbering
 ══════════════════════════════════════════════════ */
 function buildMasterRoutes(streets, minsPerHouse) {
   const timed = streets.map(s => ({
@@ -111,119 +111,58 @@ function buildMasterRoutes(streets, minsPerHouse) {
     mins: streetMins(s.houses, s.density, minsPerHouse),
   }));
 
-  // Group by SuperSubdivision. Streets with no valid subdivision get their own entry.
-  const GENERIC = new Set(['', 'other', 'none', 'n/a', 'unknown']);
-  const subdivMap = {};
-  for (const s of timed) {
-    const raw = (s.subdivision || '').trim();
-    // Use street name as its own key if subdivision is blank/generic
-    const key = GENERIC.has(raw.toLowerCase()) ? `__street__${s.name}` : raw;
-    if (!subdivMap[key]) subdivMap[key] = { name: raw || s.name, streets: [], lat: 0, lng: 0, count: 0 };
-    subdivMap[key].streets.push(s);
-    subdivMap[key].lat   += s.lat;
-    subdivMap[key].lng   += s.lng;
-    subdivMap[key].count += 1;
-  }
+  // Sort by driving distance from JRHS (closest first)
+  const sorted = [...timed].sort((a, b) =>
+    (a.drivingMinsFromJRHS ?? dist(a, JRHS) * 1000) -
+    (b.drivingMinsFromJRHS ?? dist(b, JRHS) * 1000)
+  );
 
-  const rawSubdivs = Object.values(subdivMap).map(sd => ({
-    ...sd,
-    lat:         sd.lat / sd.count,
-    lng:         sd.lng / sd.count,
-    totalMins:   sd.streets.reduce((sum, s) => sum + s.mins, 0),
-    // Use average driving distance from JRHS across streets in this subdivision
-    distFromJRHS: sd.streets.reduce((sum, s) => sum + (s.drivingMinsFromJRHS ?? dist(s, JRHS) * 1000), 0) / sd.streets.length,
-  }));
-
-  // Pre-split any subdivision that alone exceeds SHIFT_MINS
-  const splitSubdivs = [];
-  for (const sd of rawSubdivs) {
-    if (sd.totalMins <= SHIFT_MINS) { splitSubdivs.push(sd); continue; }
-    const sorted = [...sd.streets].sort((a, b) => dist(a, sd) - dist(b, sd));
-    let chunk = [], chunkMins = 0, partNum = 1;
-    for (const st of sorted) {
-      if (chunkMins + st.mins > SHIFT_MINS && chunk.length > 0) {
-        const cLat = chunk.reduce((s, x) => s + x.lat, 0) / chunk.length;
-        const cLng = chunk.reduce((s, x) => s + x.lng, 0) / chunk.length;
-        splitSubdivs.push({ name: `${sd.name} (${partNum})`, streets: chunk, lat: cLat, lng: cLng, count: chunk.length, totalMins: chunkMins, distFromJRHS: dist({ lat: cLat, lng: cLng }, JRHS) });
-        chunk = []; chunkMins = 0; partNum++;
-      }
-      chunk.push(st); chunkMins += st.mins;
-    }
-    if (chunk.length > 0) {
-      const cLat = chunk.reduce((s, x) => s + x.lat, 0) / chunk.length;
-      const cLng = chunk.reduce((s, x) => s + x.lng, 0) / chunk.length;
-      splitSubdivs.push({ name: `${sd.name} (${partNum})`, streets: chunk, lat: cLat, lng: cLng, count: chunk.length, totalMins: chunkMins, distFromJRHS: dist({ lat: cLat, lng: cLng }, JRHS) });
-    }
-  }
-
-  splitSubdivs.sort((a, b) => a.distFromJRHS - b.distFromJRHS);
-
-  // Greedy geographic clustering — STRICT 3-hour limit
-  // Rule: always prefer same-subdivision family chunks before mixing with other subdivisions
-  const unassigned = [...splitSubdivs];
+  // Greedy geographic clustering at street level
+  const unassigned = [...sorted];
   const routes = [];
 
   while (unassigned.length > 0) {
     const seed = unassigned.shift();
     const route = {
-      subdivisions: [seed],
-      totalMins:    seed.totalMins,
-      centLat:      seed.lat,
-      centLng:      seed.lng,
-      families:     new Set([seed.name.replace(/ \(\d+\)$/, '')]), // track subdivision families in route
+      streets:   [seed],
+      totalMins: seed.mins,
+      centLat:   seed.lat,
+      centLng:   seed.lng,
     };
 
     let keepAdding = true;
     while (keepAdding && unassigned.length > 0) {
       keepAdding = false;
-
-      // First pass: look for same-family chunks that fit
       let bestIdx = -1, bestDist = Infinity;
       for (let i = 0; i < unassigned.length; i++) {
-        const c = unassigned[i];
-        if (route.totalMins + c.totalMins > SHIFT_MINS) continue;
-        const family = c.name.replace(/ \(\d+\)$/, '');
-        if (!route.families.has(family)) continue; // only same family in first pass
-        const d = dist({ lat: route.centLat, lng: route.centLng }, c);
+        const s = unassigned[i];
+        if (route.totalMins + s.mins > SHIFT_MINS) continue;
+        const d = dist({ lat: route.centLat, lng: route.centLng }, s);
         if (d < bestDist) { bestDist = d; bestIdx = i; }
       }
-
-      // Second pass: if no same-family chunks fit, look for nearest other subdivision
-      if (bestIdx === -1) {
-        for (let i = 0; i < unassigned.length; i++) {
-          const c = unassigned[i];
-          if (route.totalMins + c.totalMins > SHIFT_MINS) continue;
-          const d = dist({ lat: route.centLat, lng: route.centLng }, c);
-          if (d < bestDist) { bestDist = d; bestIdx = i; }
-        }
-      }
-
       if (bestIdx !== -1) {
-        const fit = unassigned.splice(bestIdx, 1)[0];
-        route.subdivisions.push(fit);
-        route.totalMins += fit.totalMins;
-        route.families.add(fit.name.replace(/ \(\d+\)$/, ''));
-        const n = route.subdivisions.length;
-        route.centLat = route.subdivisions.reduce((s, x) => s + x.lat, 0) / n;
-        route.centLng = route.subdivisions.reduce((s, x) => s + x.lng, 0) / n;
+        const s = unassigned.splice(bestIdx, 1)[0];
+        route.streets.push(s);
+        route.totalMins += s.mins;
+        const n = route.streets.length;
+        route.centLat = route.streets.reduce((sum, x) => sum + x.lat, 0) / n;
+        route.centLng = route.streets.reduce((sum, x) => sum + x.lng, 0) / n;
         keepAdding = true;
       }
     }
     routes.push(route);
   }
 
-  routes.sort((a, b) => dist({ lat: a.centLat, lng: a.centLng }, JRHS) - dist({ lat: b.centLat, lng: b.centLng }, JRHS));
-
   return routes.map((r, i) => {
-    const allStreets = r.subdivisions.flatMap(sd => sd.streets);
+    const subdivNames = [...new Set(r.streets.map(s => s.subdivision).filter(Boolean))];
     return {
       id:           `master-route-${i+1}`,
       number:       i + 1,
       name:         `Route ${i+1}`,
-      streets:      allStreets,
-      subdivisions: r.subdivisions.map(sd => sd.name),
+      streets:      r.streets,
+      subdivisions: subdivNames.length > 0 ? subdivNames : [`Route ${i+1}`],
       totalMins:    r.totalMins,
-      totalHouses:  allStreets.reduce((s, x) => s + x.houses, 0),
+      totalHouses:  r.streets.reduce((s, x) => s + x.houses, 0),
       distFromJRHS: dist({ lat: r.centLat, lng: r.centLng }, JRHS),
     };
   });
