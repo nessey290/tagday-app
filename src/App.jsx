@@ -377,11 +377,13 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
     // otherwise fall back to Photon geocoding
     const streetCoords = [];
     const precomputed  = route?.streetCoords || [];
+    console.log('Pre-computed streets:', precomputed.map(s => s.name));
+    console.log('Stops:', stops);
 
     for (let i = 0; i < stops.length; i++) {
-      // Check if we have pre-computed endpoints from the Route Planner
       const stopName = stops[i].toLowerCase().trim();
       const pre = precomputed.find(s => s.name?.toLowerCase().trim() === stopName);
+      console.log(`Stop ${i+1}: "${stops[i]}" → pre=${pre ? 'FOUND' : 'NOT FOUND'}`);
       if (pre?.startCoord && pre?.endCoord) {
         streetCoords.push({
           name:     stops[i],
