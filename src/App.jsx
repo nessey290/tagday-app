@@ -457,12 +457,10 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
           if (!el.geometry?.length) return;
           const pts = el.geometry.map(g => [g.lat, g.lon]);
           if (pts.length < 2) return;
-          // Only include segments near the street's known centroid
-          // This prevents drawing the full length of long through-roads
-          const segCentLat = pts.reduce((sum, p) => sum + p[0], 0) / pts.length;
-          const segCentLng = pts.reduce((sum, p) => sum + p[1], 0) / pts.length;
-          const distToStreet = Math.hypot(segCentLat - s.lat, segCentLng - s.lng);
-          if (distToStreet < 0.01) segs.push(pts); // ~0.7 miles threshold
+          // Only include segments where at least one point is near the street's known endpoints
+          const nearStart = pts.some(p => Math.hypot(p[0] - s.lat, p[1] - s.lng) < 0.005);
+          const nearEnd   = s.hasEnd ? pts.some(p => Math.hypot(p[0] - s.endLat, p[1] - s.endLng) < 0.005) : false;
+          if (nearStart || nearEnd) segs.push(pts);
         });
         if (segs.length > 0) segments = segs;
       } catch (e) {
