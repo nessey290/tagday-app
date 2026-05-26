@@ -380,7 +380,8 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
 
     for (let i = 0; i < stops.length; i++) {
       // Check if we have pre-computed endpoints from the Route Planner
-      const pre = precomputed.find(s => s.name === stops[i]);
+      const stopName = stops[i].toLowerCase().trim();
+      const pre = precomputed.find(s => s.name?.toLowerCase().trim() === stopName);
       if (pre?.startCoord && pre?.endCoord) {
         streetCoords.push({
           name:     stops[i],
