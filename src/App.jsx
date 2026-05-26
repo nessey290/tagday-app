@@ -442,7 +442,7 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
     const streetGeometries = [];
     for (let i = 0; i < streetCoords.length; i++) {
       const s = streetCoords[i];
-      const query = `[out:json][timeout:15];way["name"="${s.name.replace(/"/g, '')}"](around:5000,${jrhsLat},${jrhsLng});out geom;`;
+      const query = `[out:json][timeout:15][bbox:37.477,-77.696,37.563,-77.514];way["name"="${s.name.replace(/"/g, '')}"](around:5000,${jrhsLat},${jrhsLng});out geom;`;
       let segments = null;
       try {
         const res  = await fetch('/api/overpass', {
