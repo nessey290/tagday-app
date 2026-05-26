@@ -442,7 +442,11 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
     const streetGeometries = [];
     for (let i = 0; i < streetCoords.length; i++) {
       const s = streetCoords[i];
-      const query = `[out:json][timeout:15][bbox:37.477,-77.696,37.563,-77.514];way["name"="${s.name.replace(/"/g, '')}"](around:5000,${jrhsLat},${jrhsLng});out geom;`;
+      // Search from both endpoints to capture full road geometry within district
+      const endFilter = s.hasEnd
+        ? `(around:300,${s.lat},${s.lng})(around:300,${s.endLat},${s.endLng})`
+        : `(around:300,${s.lat},${s.lng})`;
+      const query = `[out:json][timeout:15][bbox:37.477,-77.696,37.563,-77.514];(way["name"="${s.name.replace(/"/g, '')}"](around:300,${s.lat},${s.lng});way["name"="${s.name.replace(/"/g, '')}"]${s.hasEnd ? `(around:300,${s.endLat},${s.endLng})` : `(around:300,${s.lat},${s.lng})`};);out geom;`;
       let segments = null;
       try {
         const res  = await fetch('/api/overpass', {
