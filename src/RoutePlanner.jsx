@@ -139,12 +139,15 @@ function buildMasterRoutes(streets, minsPerHouse) {
       for (let i = 0; i < unassigned.length; i++) {
         const s = unassigned[i];
         if (route.totalMins + s.mins > SHIFT_MINS) continue;
-        // Score based on driving distance from JRHS similarity — streets with similar
-        // driving distances from JRHS are naturally on the same road network cluster
-        const dSeed = dist({ lat: route.seedLat, lng: route.seedLng }, s);
-        const drivingDiff = Math.abs((s.drivingMinsFromJRHS ?? 999) - (route.streets[0].drivingMinsFromJRHS ?? 999));
-        // Weight: 60% geographic proximity to seed, 40% similarity in driving distance from JRHS
-        const score = dSeed * 0.6 + (drivingDiff / 100) * 0.4;
+        // Score by distance to the nearest street already on this route.
+        // This creates a natural "expanding blob" — adjacent streets always score best,
+        // and streets requiring a detour score poorly regardless of seed position.
+        let minDistToRoute = Infinity;
+        for (const rs of route.streets) {
+          const d = dist(rs, s);
+          if (d < minDistToRoute) minDistToRoute = d;
+        }
+        const score = minDistToRoute;
         if (score < bestScore) { bestScore = score; bestIdx = i; }
       }
       if (bestIdx !== -1) {
