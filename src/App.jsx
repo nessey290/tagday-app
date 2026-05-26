@@ -457,14 +457,18 @@ function DriverScreen({ session, routes, donations, settings, progress, onAddDon
         const data = await res.json();
         console.log(`${s.name}: ${data.elements?.length} elements`);
         const segs = [];
+        // Define bounding box from street's known address endpoints
+        const minLat = Math.min(s.lat, s.hasEnd ? s.endLat : s.lat) - 0.002;
+        const maxLat = Math.max(s.lat, s.hasEnd ? s.endLat : s.lat) + 0.002;
+        const minLng = Math.min(s.lng, s.hasEnd ? s.endLng : s.lng) - 0.002;
+        const maxLng = Math.max(s.lng, s.hasEnd ? s.endLng : s.lng) + 0.002;
         (data.elements || []).forEach(el => {
           if (!el.geometry?.length) return;
-          const pts = el.geometry.map(g => [g.lat, g.lon]);
-          if (pts.length < 2) return;
-          // Only include segments where at least one point is near the street's known endpoints
-          const nearStart = pts.some(p => Math.hypot(p[0] - s.lat, p[1] - s.lng) < 0.005);
-          const nearEnd   = s.hasEnd ? pts.some(p => Math.hypot(p[0] - s.endLat, p[1] - s.endLng) < 0.005) : false;
-          if (nearStart || nearEnd) segs.push(pts);
+          // Clip points to only those within the address endpoint bounding box
+          const pts = el.geometry
+            .filter(g => g.lat >= minLat && g.lat <= maxLat && g.lon >= minLng && g.lon <= maxLng)
+            .map(g => [g.lat, g.lon]);
+          if (pts.length >= 2) segs.push(pts);
         });
         if (segs.length > 0) segments = segs;
       } catch (e) {
