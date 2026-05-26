@@ -277,6 +277,12 @@ function StepImport({ onComplete }) {
           if (!(p.HighSchoolName || '').toUpperCase().includes('JAMES RIVER')) continue;
           totalJR++;
 
+          // Only include primary addresses to avoid double-counting subordinate/alias addresses
+          if (p.AddressClassDesc !== 'Primary') continue;
+
+          // Skip addresses with no house number (non-residential/institutional)
+          if (!p.HouseNumber) continue;
+
           const prefix = (p.StreetNamePrefix  || '').trim();
           const name   = (p.StreetName         || '').trim();
           const type   = (p.StreetType         || '').trim();
